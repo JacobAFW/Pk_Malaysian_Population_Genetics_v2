@@ -1,0 +1,44 @@
+---
+title: "eems"
+output: pdf_document
+date: "2024-08-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("scripts/_setup.R"))
+dir.create(file.path(DATA_PROC, "eems"), showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# packages
+library(LEA)
+library(here)
+library(tess3r)
+library(tidyverse)
+library(maps)
+library(Rcpp)
+library(rworldmap)
+library(malariaAtlas)
+```
+
+```{r}
+original <- read.table(file.path(DATA_RAW, "eems", "clusters_combined.fam"))
+gis <- read.table(file.path(DATA_RAW, "tess3r", "complete_gis_na_omit.fam"))
+gis <- gis %>%
+  filter(V1 %in% original$V1)
+gis <- gis[order(match(gis$V1, original$V1)),]
+gis <- gis %>%
+  mutate(long = ifelse(V7 < V8, V8, V7)) %>%
+  mutate(lat = ifelse(V8 > V7, V7, V8)) %>%
+  dplyr::select(-c(V7, V8))
+write_tsv(gis, file.path(DATA_PROC, "eems", "gis_ordered_for_python.coords"), col_names = FALSE)
+```
+
+```{r}
+gis %>%
+  distinct(long, lat, .keep_all = TRUE) %>%
+  write_tsv(file.path(DATA_PROC, "eems", "samples_to_keep.txt"), col_names = FALSE)
+```
+

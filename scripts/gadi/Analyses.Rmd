@@ -1,0 +1,2422 @@
+# Using plink to for explotaroy analyses
+
+This markdown describes the workflow from filtered VCF to GWAS for Plasmodium Knowlesi.
+
+Helpful links:
+PLINK: https://www.biostars.org/p/271694/
+PLINK: https://plink.readthedocs.io/en/latest/plink_ex/
+MOI: https://bahlolab.github.io/moimix/vignettes/introduction.html#estimating-moi-with-f_ws
+
+## Required tools/libraries for Analyses
+
+```{bash,eval=F}
+module load bcftools/1.12
+module load java/jdk-8.40 
+module load R/4.3.1 
+export R_LIBS=/home/588/jw1542/.local/lib/R_4.3:$R_LIBS
+export PATH=$PATH:/g/data/pq84/bin/plink2/
+source /g/data/pq84/python-3.9.2/bin/activate
+export PATH=$PATH:/g/data/pq84/bin/hmmIBD/  
+
+FASTA="/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/ref_genomes/PKA1H1/fasta"
+VCF="/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/04_Variant_calling/filtered/adjusted_filters/include_archived_samples"
+GATK="/g/data/pq84/bin/GenomeAnalysisTK-3.8-1-0/GenomeAnalysisTK.jar"
+REGIONS_TO_MASK="/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/ref_genomes/regions_to_mask.list"
+
+cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/Population_genetics/
+```
+
+## Exclude controls & MIT and API contigs
+
+```{R,eval=F}
+bcftools view $VCF/Consensus_filtered_SNPs.vcf.gz | head -n 100 | grep 'CHROM' | tr '\t' '\n' | grep -v 'ctrl' | tail -n+10 > filter_samples.txt
+
+bcftools view $VCF/Consensus_filtered_SNPs.vcf.gz -r ordered_PKNH_01_v2,ordered_PKNH_02_v2,ordered_PKNH_03_v2,ordered_PKNH_04_v2,ordered_PKNH_05_v2,ordered_PKNH_06_v2,ordered_PKNH_07_v2,ordered_PKNH_08_v2,ordered_PKNH_09_v2,ordered_PKNH_10_v2,ordered_PKNH_11_v2,ordered_PKNH_12_v2,ordered_PKNH_13_v2,ordered_PKNH_14_v2 | \
+  bcftools view -o Consensus_SNPs_subset.vcf.gz - -S filter_samples.txt
+bcftools index -t Consensus_SNPs_subset.vcf.gz
+```
+
+
+## Calculate multiplicity of infection using moimix
+
+To install MCMCpack on Gadi: https://opus.nci.org.au/display/Help/R 
+
+Steps:
+ - Mask problematic regions and subset to biallelic SNPs (assumption of moimix)
+ - Convert VCF to GDS
+ - Estimate BAF matrix 
+    - estimate B-allele freq for each isolate. 
+    - resulting bafmatrix stores estimates and genomic coordinates
+ - Estimating MOI with binommix
+    - estimated on per-isolate basis using binomial mixture model
+    - to fit model - need a matrix of read counts and to set the value of k=2c where c is the number of clonal infections
+ - Estimating MOI with Fws
+    - alternative way of assessing clonality is to estmate Fws, with Fws < 0.95 indicating clonal infection (low MOI)
+
+
+File(s):  
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/GWAS/moimix/moimix.pbs
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/GWAS/moimix/seqVCF2GDS.R
+
+Version(s):
+bcftools/1.12
+R/4.1.0 
+
+Submission: 
+Single PBS script with nested R script.
+
+Notes:
+
+```{bash, eval=F}
+#!/bin/bash
+#PBS -P pq84
+#PBS -q normalbw
+#PBS -N moimix
+#PBS -j oe
+#PBS -m ae
+#PBS -l walltime=48:00:00,mem=128GB,ncpus=16
+#PBS -l storage=gdata/pq84+scratch/pq84
+#PBS -M jacob.westaway@menzies.edu.au
+
+echo "---------------------------------------"
+echo "PBS: Job identifier is $PBS_JOBID"
+echo "PBS: Job name is $PBS_JOBNAME"
+
+echo "---------------------------------------"
+echo "Define paths and load modules"
+module load bcftools/1.12
+module load R/4.1.0 
+export R_LIBS_USER="/g/data/pq84/R"
+cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/GWAS
+mkdir moimix
+
+echo "---------------------------------------"
+echo "Update VCF"
+bcftools index -t Consensus_SNPs_subset.vcf.gz
+bcftools view Consensus_SNPs_subset.vcf.gz -M2 | bcftools view -f PASS - | bcftools view -e "MAC<2" -o moimix/SNP_subset_moimix.vcf.gz 
+bcftools view Consensus_SNPs_subset.vcf.gz -M2 | bcftools view -f PASS - | bcftools +fill-tags -- -t AF | bcftools view -e "MAF<0.05" -o moimix/SNP_subset_moimix_maf.vcf.gz
+
+echo "---------------------------------------"
+echo "Create GDS file"
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/GWAS/moimix/seqVCF2GDS.R
+
+echo "---------------------------------------"
+echo "Finished"
+```
+
+```{R,eval=F}
+# Converting VCF to GDS for estMOI
+library(tidyverse)
+library(SeqArray)
+library(moimix)
+
+seqVCF2GDS("moimix/Pf3D7_moimix_subset.vcf.gz", "moimix/Pf3D7_moimix_subset.gds", storage.option = "LZ4_RA")
+isolates <- seqOpen("moimix/Pf3D7_moimix_subset_2.gds") # read into R
+seqSummary(isolates)
+sample.id <- seqGetData(isolates, "sample.id")
+
+coords <- getCoordinates(isolates) # get genomic coordinates of all variants
+
+## estimating BAF matrix 
+isolate_baf <- bafMatrix(isolates)
+
+baf_df <- isolate_baf$coords %>%
+  cbind(
+    as.data.frame(isolate_baf$baf_site) %>% 
+      rename(baf = "isolate_baf$baf_site")
+    ) %>%
+  left_join(
+    isolate_baf$baf_matrix %>%
+      as.data.frame() %>%
+      t() %>%
+      as.data.frame() %>%
+      rownames_to_column("variant.id") %>%
+      mutate(variant.id = as.numeric(variant.id)) 
+    ) 
+
+write_tsv(baf_df, "moimix/BAF_dataframe.tsv")
+
+
+# Estimate Fws
+set.seed(2023)
+
+fws_all <- getFws(isolates) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "sample") %>%
+  rename("Proportion" = ".")
+
+## Plot MOI distribution and export ######################
+
+## output MOI data
+fws_all %>%  
+  write_tsv("moimix/fws_MOI.tsv")
+
+## output samples with HIGH MOI data
+fws_all %>%  
+  filter(Proportion < 0.95) %>% 
+  select(sample) %>%
+  write_tsv("moimix/fws_high_MOI.tsv")
+```
+
+
+Plot Fws
+
+```{R,eval=F}
+library(tidyverse)
+library(janitor)
+library(viridis)
+library(lme4)
+
+fws_all <- read_tsv("moimix/fws_MOI.tsv") %>%
+  rename(Sample = sample) %>% 
+  mutate(Sample = str_remove(Sample, "_DK.*")) %>% 
+  mutate(Sample = str_replace(Sample, "_", "-")) 
+
+metadata <- read_tsv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/full_metadata.tsv") %>% 
+    mutate(sevemal = ifelse(grepl("UM", sevemal), "UM", .$sevemal)) %>% 
+    mutate(sevemal = ifelse(sevemal == "1", "SM", ifelse(sevemal == "0", "UM", .$sevemal))) %>% 
+    rename(Sample = studycode) %>% 
+    mutate(district = str_to_title(district)) %>%
+    add_column(Cluster = NA)
+
+archived_data <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(district = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) %>% 
+        rbind(read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        rename(district = Location) %>%
+        add_column(Cluster = "Peninsular")
+        ) %>%
+        add_column(enroldate=NA, age = NA, sex=NA, ethnicity=NA, village=NA, occupation=NA, Hb=NA, platelets=NA,
+        parasitemia=NA, fever_days=NA, respiratory_rate=NA, oxygen_saturation=NA, systolic_BP=NA, diastolic_BP=NA, G6PD=NA,
+        pregnant=NA, creatinine=NA, study=NA, bicarbonate=NA, PCR=NA, sevemal=NA, bilirubin=NA, glucose=NA, bleeding_severity=NA)
+
+metadata <- metadata %>%
+    rbind(archived_data)
+
+fws_meta <- fws_all %>% 
+  left_join(metadata)
+
+# Plot - column
+fws_plot <- fws_meta %>%
+  arrange(desc(Proportion)) %>%
+  add_column(Sample_name = 1:nrow(.)) %>%
+  mutate(MOI = ifelse(Proportion >= 0.98, "No MOI",
+        ifelse(Proportion < 0.98 & Proportion > 0.85, "Low MOI", "High MOI"))) %>%
+  ggplot(aes(x = Sample_name, y = Proportion, fill = MOI)) +
+  geom_col() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_fill_viridis_d()
+
+ggsave("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/GWAS/moimix/fws_col_plot.png", width = 14, dpi = 300, fws_plot)
+
+# Plot - box
+fws_plot <- fws_meta %>% 
+  ggplot(aes(x = district, y = Proportion, colour = district)) +
+  geom_boxplot() +
+  coord_flip() +
+  scale_colour_viridis_d() +
+  theme(legend.position = "none") + 
+  ylab("District")
+  
+ggsave("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/GWAS/moimix/fws_box_plot_districts.png", dpi = 300, fws_plot)
+
+# Plot - dot and line
+fws_plot <- fws_meta %>%
+  arrange(desc(Proportion)) %>%
+  add_column(Sample_name = 1:nrow(.)) %>% 
+  ggplot(aes(x = Sample_name, y = Proportion, colour = district), group = distict) +
+  geom_point() +
+  geom_line() +
+  scale_colour_viridis_d() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("Proportion") +
+  xlab("Samples")
+  
+ggsave("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/GWAS/moimix/fws_dot_line.png", dpi = 300, width = 12, fws_plot)
+
+# Plot - density
+fws_plot <- fws_meta %>%
+  arrange(desc(Proportion)) %>%
+  add_column(Sample_name = 1:nrow(.)) %>% 
+  ggplot(aes(x = Proportion, colour = district), group = distict) +
+  geom_density() +
+  scale_colour_viridis_d(name = "District") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("Density")
+  
+ggsave("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/GWAS/moimix/fws_density.png", dpi = 300, width = 12, fws_plot)
+
+# District
+kruskal.test(Proportion ~ district, data = fws_meta)
+
+pairwise.wilcox.test(fws_meta$Proportion, g = fws_meta$district, p.adjust.method = "BH")$p.value %>% 
+  as.data.frame() %>% 
+  rownames_to_column("district_1") %>%
+  pivot_longer(2:ncol(.), names_to = "district_2", values_to = "adj_p") %>%
+  na.omit() %>% 
+  write.table("moimix/wilcoxin_rank_sum_test.txt")
+
+shapiro.test(fws_meta$Proportion) # not normal
+
+lme4::glmer(Proportion ~ district + (1|parasitemia), (fws_meta %>% filter(!is.na(district))), family = Gamma(link = "log")) %>%   
+  summary()
+
+glm(Proportion ~ district, (fws_meta %>% filter(!is.na(district))), family = Gamma(link = "log")) %>% 
+  summary()
+
+
+
+########################################################## WORK IN PROGRESS ##########################################################
+# Cluster - requires metadata from downstream analysis 
+pca <- read_table("Pk.eigenvec", col_names=F) %>% 
+    select(-1) %>%
+    rename("sampleid" = "X2") %>%
+    rename_at(vars(starts_with("X")), ~str_replace(., "X.*", paste0("PC", seq_along(.))))
+
+    
+```
+
+# Plot NRAF
+
+```{R,eval=F}
+library(tidyverse)
+
+baf_df <- read_tsv("moimix/BAF_dataframe.tsv") %>% # Generated with previous script
+  mutate(chromosome = str_remove(chromosome, "ordered_PKNH_0")) %>% 
+  mutate(chromosome = str_remove(chromosome, "_v2")) %>%
+  rename_with(~str_remove(., "-"))
+
+## Plot BAF for different Fws samples with ggplot
+plot_baf <- function(DATA, SAMPLE){
+DATA %>%
+    ggplot(aes_string(x = "variant.id", y = SAMPLE, colour = "chromosome")) + # use aes string so that we can paste the str in from the function arguments - passing the sample in not as a string does not work
+    geom_point() +
+    scale_colour_manual(values = c(rep_len(c("#404788FF", "#1F968BFF"), length(unique(baf_df$chromosome))))) +
+    xlab("Chromosome") +
+    ylab("NRAF") + 
+    theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+    guides(colour = guide_legend(nrow = 1))
+}
+# top 20
+sample_list <- read_tsv("moimix/fws_MOI.tsv") %>%
+  filter(Proportion < 0.95) %>%
+  filter(!grepl("ERR", sample)) %>%
+  arrange(Proportion) %>%
+  slice(1:20) %>%
+  select(sample) %>%
+  pull()
+
+for (i in sample_list){
+  baf_plot <- plot_baf(baf_df, paste0(i))
+  ggsave(paste0("moimix/",i,"_NRAF.png"), width = 14, dpi = 300, baf_plot)
+}
+```
+
+
+## Exclude samples with high MOI
+
+File(s):  
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/Exclude_high_fws_samples.pbs
+
+Version(s):
+bcftools/1.12
+
+Submission: 
+Single PBS script.
+
+Notes:
+To get list of samples:
+cat moimix/fws_high_MOI.tsv | tr '\n' ',' 
+
+```{R,eval=F}
+#!/bin/bash
+#PBS -P pq84
+#PBS -q normalbw
+#PBS -N Exclude_high_fws
+#PBS -j oe
+#PBS -m ae
+#PBS -l walltime=48:00:00,mem=32GB,ncpus=4
+#PBS -l storage=gdata/pq84+scratch/pq84
+#PBS -M jacob.westaway@menzies.edu.au
+
+echo "---------------------------------------"
+echo "PBS: Job identifier is $PBS_JOBID"
+echo "PBS: Job name is $PBS_JOBNAME"
+
+echo "---------------------------------------"
+echo "Define paths and load modules"
+module load bcftools/1.12
+cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/Population_genetics
+
+echo "---------------------------------------"
+echo "Exclude high fws samples"
+bcftools view Consensus_SNPs_subset.vcf.gz -s ^ERR2214842,ERR2214850,ERR2214856,ERR3374041,ERR3374048,ERR3374050,ERR3374056,ERR985375,ERR985376,ERR985386,ERR985395,ERR985396,ERR985397,ERR985405,ERR985409,ERR985410,ERR985417,ERR985419,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED \
+  | bcftools view -f PASS - | bcftools view -e "MAC<2" -o Consensus_SNPs_subset_no_MOI.vcf.gz
+
+echo "---------------------------------------"
+echo "Finished"
+```
+
+## Normalise VCF & convert filtered vcf to bcf
+
+File(s):  
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/vcf_to_bcf.pbs
+
+Version(s):
+bcftools/1.12
+
+Submission: 
+Single PBS script.
+
+Notes:
+ - Mask hypervariable regions with bcftools (already done in previous step)
+ - Ensure that multi-allelic calls are split (1st part)
+ - Left-align indels (2nd part)
+ - Set the ID field to a unique value: CHROM:POS:REF:ALT (3rd part)
+ 
+ --indiv-sort - specify how samples will be sorted - use to be consistent when adding metadata downstream 
+
+```{R,eval=F}
+#!/bin/bash
+#PBS -P pq84
+#PBS -q normalbw
+#PBS -N vcf_to_bcf
+#PBS -j oe
+#PBS -m ae
+#PBS -l walltime=48:00:00,mem=16GB,ncpus=2
+#PBS -l storage=gdata/pq84+scratch/pq84
+#PBS -M jacob.westaway@menzies.edu.au
+
+echo "---------------------------------------"
+echo "PBS: Job identifier is $PBS_JOBID"
+echo "PBS: Job name is $PBS_JOBNAME"
+
+echo "---------------------------------------"
+echo "Define paths and load modules"
+module load bcftools/1.12
+FASTA="/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/ref_genomes/PKA1H1/fasta"
+cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/Population_genetics/
+
+echo "---------------------------------------"
+echo "VCF to BCF"
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | \
+  sed 's/AD,Number=R/AD,Number=./' | \
+  bcftools norm -m-any | \
+  bcftools norm --check-ref w -f $FASTA/strain_A1_H.1.Icor.fasta | \
+  bcftools annotate -Ob -x ID -I +'%CHROM:%POS:%REF:%ALT:%ID' \
+  > Consensus_SNPs_subset_no_MOI.bcf
+
+echo "---------------------------------------"
+echo "FINISHED"
+```
+
+
+## Convert to PLINK format 
+
+Generic PLINK function to produce generic PLINK files
+First create sample_order file & regions_to_mask file 
+
+The regions we masked are: https://plasmodb.org/plasmo/service/users/current/steps/429386433/reports/attributesTabular & https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5918592/ and have to follow this format: https://www.cog-genomics.org/plink/1.9/input#make_set.
+To find other hypervariable regions that may need to be masked, you can plot data from Pk.bim (created in step below) to acquire SNP frequencies/density in a sliding window approach.
+
+```{bash,eval=F}
+bcftools view Consensus_SNPs_subset_no_MOI.bcf| sed -n '/#CHROM/,$p' | head -n 1 | tr '\t' '\n' |  tail -n+10 | awk '{print $1 "\t" $1}' > sample_order.txt
+
+awk '{sub(/ordered_PKNH_/,"",$1)}1' Pk.bim | awk '{sub(/_v2/,"",$1)}1' | awk '{print $2 "\t" $1}' > chrom_update.txt
+
+plink --bcf Consensus_SNPs_subset_no_MOI.bcf \
+  --keep-allele-order \
+  --vcf-idspace-to _ \
+  --double-id \
+  --allow-extra-chr 0 \
+  --update-chr chrom_update.txt \
+  --make-bed \
+  --indiv-sort file sample_order.txt \
+  --exclude 'range' regions_to_mask.txt \
+  --allow-no-sex \
+  --out Pk
+```
+
+### For SNP density across the genome
+
+```{R,eval=f}
+# Load packages
+library(tidyverse)
+
+# Read in data
+snp_data <- read_table("Pk.bim", col_names = F) %>%
+    select(X2) %>%
+    separate(X2, into = c("Contig", "Pos", "Major", "Minor", "Nothing"), sep = ":") %>%
+    mutate(Pos = as.numeric(Pos)) %>%
+    select(1:2) %>%
+    arrange(Contig, Pos)
+
+# Create window 
+window_size <- 10000
+
+snp_plot <- snp_data %>%
+    mutate(Window = (floor(Pos/window_size) * window_size)+ (window_size/2)) %>%
+    group_by(Contig, Window) %>%
+    summarise(SNPs = n()) %>%
+    ggplot(aes(x = Window, y = SNPs, colour = Contig)) +
+    geom_point() +
+    facet_wrap(~Contig) +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "none") +
+    xlab("Chromosome position (10K Windows)")
+
+ggsave("outputs/SNP_density.png", dpi = 300, width = 14, snp_plot)
+
+snp_plot <- snp_data %>%
+    mutate(Window = (floor(Pos/window_size) * window_size)+ (window_size/2)) %>%
+    group_by(Contig, Window) %>%
+    summarise(SNPs = n()) %>%
+    ggplot(aes(x = Window, y = SNPs, colour = Contig)) +
+    geom_line() +
+    facet_wrap(~Contig) +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "none") +
+    xlab("Chromosome position (10K Windows)")
+
+ggsave("SNP_density_line.png", dpi = 300, width = 14, snp_plot)   
+```
+
+
+## Add metadata to PLINK fam & find duplicates to remove
+
+```{R,eval=F}
+# Packages
+library(tidyverse)
+library(janitor)
+library(data.table)
+
+# Metadata
+metadata <- read_csv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/full_dataset_011223.csv") %>%
+    rename(Sample = studycode) %>% 
+    add_column(Cluster = NA) %>% 
+    mutate(sevemal = ifelse(grepl("Um", sevemal), "Um", 
+        ifelse(sevemal == "1", "Sm",
+        ifelse(sevemal == "0", "Um", .$sevemal)))) %>%
+    mutate(Sample = str_to_upper(Sample))
+
+original_metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>%
+    select(1:3) %>%
+    mutate(subjectid = ifelse(str_length(subjectid) == 1, paste0("00", subjectid), # if subjectid length = 1 paste 00
+        ifelse(str_length(subjectid) == 2, paste0("0", subjectid), # if not, then if subjectid length = 2 paste 0
+        .$subjectid))) %>%
+    unite(Sample2, c("group", "subjectid"), sep ="") %>% 
+    rename(Sample = sampleid)
+
+archived_data <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(district = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) %>% 
+        rbind(read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        rename(district = Location) %>%
+        add_column(Cluster = "Peninsular")
+        ) %>%
+        add_column(enroldate=NA, age = NA, sex=NA, ethnicity=NA, village=NA, occupation=NA, Hb=NA, platelets=NA,
+        parasitemia=NA, fever=NA, respiratory_rate=NA, oxygen_saturation=NA, systolic_BP=NA, diastolic_BP=NA, G6PD=NA,
+        pregnant=NA, creatinine=NA, study=NA, bicarbonate=NA, PCR=NA, sevemal=NA, bilirubin=NA, glucose=NA, bleeding_severity=NA)
+
+# To check colnames are the same
+colnames(metadata) %>% 
+    as.data.frame() %>% 
+    rename(V1 = ".") %>% 
+    arrange(V1) %>% 
+    cbind(colnames(archived_data) %>% 
+        as.data.frame() %>% 
+        rename(V2 = ".") %>% 
+        arrange(V2 )
+    )
+
+metadata <- metadata %>%
+    rbind(archived_data) %>%
+    select(Sample, sevemal)
+
+Plink_fam <- read.table("Pk.fam", sep =" ") %>% 
+    filter(!grepl("PK_SB_DNA", V1)) %>% # original batch - name does not line up with metadata
+    mutate(Sample = str_remove(V1, "_DK.*")) %>% 
+    mutate(Sample = str_replace(Sample, "_", "-")) %>% 
+    left_join(metadata) %>% 
+    select(-Sample) %>% 
+    rbind(
+        read.table("Pk.fam", sep =" ") %>% 
+            filter(grepl("PK_SB_DNA", V1)) %>%
+            mutate(Sample = str_remove(V1, "_DK.*")) %>% 
+            left_join(original_metadata) %>% 
+            mutate(Sample = Sample2) %>% 
+            left_join(metadata) %>%
+            select(-c(Sample, Sample2))
+    )
+
+write.table(Plink_fam, "Pk.fam", quote = FALSE, sep = " ", col.names = FALSE, row.names = FALSE)
+
+Plink_fam %>% 
+  select(-c(2:6)) %>% 
+  write_csv("Pk.csv")
+
+
+# Duplicates
+read.table("Pk.fam", sep =" ") %>% 
+    mutate(Sample = str_remove(V1, "_DK.*")) %>% 
+    mutate(Sample = str_replace(Sample, "_", "-")) %>%
+    group_by(Sample) %>%
+    filter(n() > 1) %>% 
+    ungroup() %>%
+    select(1:6) %>%
+    write.table("Pk.dups", quote = FALSE, sep = " ", col.names = FALSE, row.names = FALSE)
+```
+
+
+## To remove duplicates
+
+```{bash,eval=F}
+plink --bfile Pk --recode --make-bed --remove Pk.dups --out Pk
+```
+
+
+## Calculate minor allele frequency, genotypic missingness
+
+```{eval=F}
+plink --bfile Pk \
+  --freq \
+  --missing \
+  --allow-no-sex \
+  --out Pk
+```
+
+ - N_MISS =Number of missing SNPs
+ - N_GENO =Number of non-obligatory missing genotypes
+ - F_MISS =Proportion of missing SNPs
+
+## Plot distribution of MAF and genotypic missingness
+
+```{bash,eval=F}
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/maf_dist.R
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/miss_dist.R
+```
+
+### maf_dist.R
+
+```{R,eval=F}
+# Load packages
+library(tidyverse)
+
+# Read in data
+Pk_maf <- read_table("Pk.frq", col_names=T) %>%
+    mutate(CHR = str_remove(SNP, ":.*"))
+
+# Density of MAF by SNP
+Pk_maf_density <- Pk_maf  %>%
+    ggplot(aes(x = MAF)) +
+    geom_density(alpha=.3) 
+
+ggsave("outputs/Pk_maf_density.png", dpi = 600, Pk_maf_density)
+
+# Plot MAF by chr
+Pk_maf_chr <- Pk_maf %>% 
+    mutate(SNP = str_remove(SNP, "ordered_PKNH_"),
+        SNP = str_remove(SNP,"_v2.*")) %>% 
+    group_by(SNP) %>%
+    summarise(MAF = mean(MAF)) %>%
+    ggplot(aes(x = SNP, y = MAF)) +
+    geom_col() +
+    theme(axis.text.x = element_text(angle = 45), legend.position = "none") +
+    scale_fill_viridis_d() 
+
+ggsave("outputs/Pk_maf_plot_chr.png", dpi = 600, Pk_maf_chr)
+
+# Summary stats
+
+Pk_maf %>% 
+    mutate(SNP = str_remove(SNP, "ordered_PKNH_"),
+        SNP = str_remove(SNP,"_v2.*")) %>% 
+    group_by(SNP) %>%
+    summarise(MAF_mean = mean(MAF),
+            MAF_SD = sd(MAF),
+            MAF_SE = (sd(MAF))/sqrt(n())) %>%
+rbind(
+    Pk_maf %>%
+        summarise(MAF_mean = mean(MAF),
+                MAF_SD = sd(MAF),
+                MAF_SE = (sd(MAF))/sqrt(n())) %>%
+        add_column(SNP = "Total")
+    ) %>%
+    write_tsv(col_names = T, "outputs/Pk_maf_summary.tsv")
+```
+
+### miss_dist.R
+
+```{R,eval=F}
+# Load packages
+library(tidyverse)
+library(data.table)
+
+# Sample-based missing data
+## Read in data
+sample_mis <- read_table("Pk.imiss", col_names=T) 
+
+# Density of miss by sample
+sample_miss_density <- sample_mis %>% 
+    rename(Sample = IID,
+        Geno_Miss = F_MISS) %>%
+    select(2:ncol(.)) %>%
+    ggplot(aes(x = Geno_Miss)) +
+    geom_density(alpha=.3) +
+    geom_vline(xintercept = 0.25, colour = "#1F968BFF") 
+
+ggsave("outputs/sample_miss_density_plot.png", width = 12, dpi = 600, sample_miss_density)
+
+# Variant-based missing data
+## Read in data
+var_miss <- read_table("Pk.lmiss", col_names=T) %>%
+    mutate(CHR = str_remove(SNP, ":.*")) %>%
+    rename(Geno_Miss = F_MISS,
+            Chr = CHR)
+
+# Density of miss by variant
+var_miss_density <- var_miss %>% 
+    ggplot(aes(x = Geno_Miss)) +
+    geom_density(alpha=.3) +
+    geom_vline(xintercept = 0.25, colour = "#1F968BFF") +
+    geom_vline(xintercept = 0.1, colour = "#1F968BFF") 
+
+ggsave("outputs/variant_miss_density_plot.png", width = 12, dpi = 600, var_miss_density)
+
+
+# Summary stats
+
+miss_summary <- var_miss %>%
+    summarise(Miss_mean = mean(Geno_Miss),
+                Miss_SD = sd(Geno_Miss),
+                Miss_SE = (sd(Geno_Miss))/sqrt(n()))
+
+write_tsv(miss_summary, "outputs/Pk_miss_summary.tsv")
+```
+
+## Apply filters for genotypic missingess & MAF
+
+ - first recode creates the intial .map and .ped files
+ - recode generates new .ped and .map files
+ - --make-bed generates .bed, .bim and .fam files
+ - -mind filters per sample (missingness)
+ - -geno filters per variant (missingness)
+
+**FILTERED:**
+ - exclude variants with > 20% missing alleles
+ - exclude samples with > 20% missing alleles
+ - exclude variants with minor allele frequencies < 1%
+
+Values selected based on the distrbutions plotted previously.
+
+MAF (=Minor Allele Frequency) = P(geno=1, Aa)x0.5 + P(geno=2, aa)
+
+```{bash,eval=F}
+plink --bfile Pk --recode --out Pk
+plink --file Pk --geno 0.20 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --mind 0.20 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --maf 0.01 --make-bed --out cleaned
+```
+
+
+#########################################################################################################
+
+# ADMIXTURE
+
+ADMIXTURE is a clustering software that infers populations and ancestries. It requires unlinked SNPs in PLINK format, specifically the .bed (binary allelic genotype table) file as input. Here we used the "cleaned.bim" file previously created (filtered for MAF and GM).
+
+**NB** ADMIXTURE does not accept chromosome names that are not human chromosomes and so make sure the first column is 0.
+
+Steps:
+    - identify the best K value = the number of ancestral populations you believe to be present. From the previous analyses it looks like there is 3 (Mn, Mf and Peninsular), however, you can run several and then compare.
+    - collect the cv errors 
+    - plot the results in R
+
+```{bash,eval=F}
+export PATH=$PATH:/g/data/pq84/bin/admixture_linux-1.3.0/
+mkdir admixture
+
+for i in {3..5}
+    do admixture --cv cleaned.bed $i > admixture/log${i}.out
+done
+
+mv *P *Q admixture
+
+cd admixture
+
+awk '/CV/ {print $3,$4}' *out | cut -c 4,7-20 > Pk.cv.error
+```
+
+# Use PLINK to create PCA and MDS data, and a distance matrix (identity-by-state)
+
+The different functions:
+    --cluster is MDS
+    --distance is identity by state
+
+```{bash,eval=F}
+plink --bfile cleaned --cluster --mds-plot 10 --out Pk
+plink --bfile cleaned --pca --out Pk
+plink --bfile cleaned --distance square --out Pk
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/ordination_plots.R
+```
+
+# Plot PCA, MDS, NJT and admix plots
+
+### ordination_plots.R
+
+```{R,eval=F}
+#Load packages
+library(tidyverse)
+library(ape)
+library(ggtree)
+library(viridis)
+
+## Metadata 
+metadata <- read_tsv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/full_metadata.tsv") %>% 
+    mutate(sevemal = ifelse(grepl("UM", sevemal), "UM", .$sevemal)) %>% 
+    mutate(sevemal = ifelse(sevemal == "1", "SM", ifelse(sevemal == "0", "UM", .$sevemal))) %>% 
+    rename(Sample = studycode) %>% 
+    mutate(district = str_to_title(district)) %>%
+    add_column(Cluster = NA)
+
+original_metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>%
+    select(1:3) %>%
+    mutate(subjectid = ifelse(str_length(subjectid) == 1, paste0("00", subjectid), # if subjectid length = 1 paste 00
+        ifelse(str_length(subjectid) == 2, paste0("0", subjectid), # if not, then if subjectid length = 2 paste 0
+        .$subjectid))) %>%
+    unite(Sample, c("group", "subjectid"), sep ="") %>% 
+    rename(Sample2 = sampleid)
+
+metadata <- metadata %>%
+    left_join(original_metadata) %>%
+    mutate(Sample2 = ifelse(is.na(Sample2), Sample, Sample2)) %>%
+    select(-Sample) %>%
+    rename(Sample = Sample2) %>%
+    relocate(Sample)
+    
+    
+archived_data <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(district = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) %>% 
+        rbind(read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        rename(district = Location) %>%
+        add_column(Cluster = "Peninsular")
+        ) %>%
+        add_column(enroldate=NA, age = NA, sex=NA, ethnicity=NA, village=NA, occupation=NA, Hb=NA, platelets=NA,
+        parasitemia=NA, fever_days=NA, respiratory_rate=NA, oxygen_saturation=NA, systolic_BP=NA, diastolic_BP=NA, G6PD=NA,
+        pregnant=NA, creatinine=NA, study=NA, bicarbonate=NA, PCR=NA, sevemal=NA, bilirubin=NA, glucose=NA, bleeding_severity=NA)
+
+
+metadata <- metadata %>%
+    rbind(archived_data) %>%
+  mutate_at(c("district", "village"), str_to_title) %>%
+  mutate(Sample2 = Sample) %>% 
+  mutate(district = ifelse(district == "Kota Murudu", "Kota Marudu", .$district)) %>% 
+  mutate(district = ifelse(district == "Sungai Siuit", "Sungai Siput", .$district))
+
+
+# Bar plot of ADMIXTURE output
+
+admixture_table <- read.table("admixture/cleaned.3.Q") %>%
+    cbind(
+        read.table("cleaned.fam") %>%
+            select(1) %>%
+            rename(Sample = V1)
+    ) %>% 
+    arrange(desc(V3), desc(V2), desc(V1)) %>% 
+    add_column(Sample2 = as.factor(1:nrow(.))) %>%
+    pivot_longer(1:3, 
+        names_to = "Ancestry", 
+        values_to = "Proportion") %>% 
+  mutate(Cluster = ifelse(Ancestry == "V1", "Mn",
+                          ifelse(Ancestry == "V2", "Mf", "Peninsular"))) 
+
+admix_plot <- admixture_table %>% 
+  mutate(Ancestry = Proportion) %>% 
+  ggplot(aes(x = Sample2, y = Ancestry, fill = Cluster)) +
+  geom_col() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_fill_manual(values = c("#440154FF", "#39568CFF", "#73D055FF")) +
+  xlab("Sample")
+
+ggsave("outputs/admix_bar_plot.png", dpi=300, admix_plot, width = 20)
+
+
+# Clusters as determined by admixture
+admix_clusters <- admixture_table %>% 
+    group_by(Sample) %>% 
+    filter(Proportion == max(Proportion)) 
+
+write_tsv(admix_clusters, "outputs/admix_clusters.tsv")
+
+# Improved admix plot
+plot_order <- admix_clusters %>%
+  filter(Cluster == "Mf") %>%
+  arrange(desc(Proportion)) %>%
+  rbind(
+    admix_clusters %>%
+      filter(Cluster == "Mn") %>%
+      arrange(Proportion)
+  ) %>% 
+  rbind(
+    admix_clusters %>%
+      filter(Cluster == "Peninsular") %>%
+      arrange(desc(Proportion))
+  ) %>% select(Sample, Cluster) %>%
+  add_column(Sample2 = as.factor(1:nrow(.))) %>%
+  rename(Cluster2 = Cluster)
+
+admix_plot <- admixture_table %>% 
+  select(-Sample2) %>%
+  left_join(plot_order) %>%
+  mutate(Ancestry = Proportion) %>% 
+  ggplot(aes(x = Sample2, y = Ancestry, fill = Cluster)) +
+  geom_col() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_fill_manual(values = c("#440154FF", "#39568CFF", "#73D055FF")) +
+  xlab("Sample")
+
+ggsave("outputs/admix_bar_plot_2.png", dpi=300, admix_plot, width = 20)
+
+admix_plot <- admixture_table %>% 
+  select(-Sample2) %>%
+  left_join(plot_order) %>%
+  filter(!grepl("SRR", Sample)) %>%
+  mutate(Ancestry = Proportion) %>% 
+  ggplot(aes(x = Sample2, y = Ancestry, fill = Cluster)) +
+  geom_col() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_fill_manual(values = c("#440154FF", "#39568CFF", "#73D055FF")) +
+  xlab("Sample")
+
+ggsave("outputs/admix_bar_plot_no_lab_strains.png", dpi=300, admix_plot, width = 20)
+
+# Mf & Mn samples with Peninsular - add metadata and take a look
+borneo_with_peninsular <- admixture_table %>% 
+  select(-Sample2) %>%
+  left_join(plot_order) %>% 
+  filter(Cluster2 == "Mf" | Cluster2 == "Mn") %>%
+  filter(Cluster == "Peninsular" & Proportion > 0.01) %>% 
+  mutate(Sample = str_remove(Sample, "_DK.*")) %>% 
+  mutate(Sample = str_replace(Sample, "_", "-")) %>%
+  left_join(
+    metadata %>% 
+    select(-c(Cluster, Sample2))
+  )
+
+write_tsv(borneo_with_peninsular, "outputs/admix_borneo_peninsular_mix.tsv")
+
+# Admix of Mf and Mn - add metadata and take a look
+borneo <- admixture_table %>% 
+  select(-Sample2) %>%
+  left_join(plot_order) %>% 
+  filter(Cluster2 == "Mf") %>%
+  filter(Cluster == "Mn" & Proportion > 0.01) %>% 
+  mutate(Sample = str_remove(Sample, "_DK.*")) %>% 
+  mutate(Sample = str_replace(Sample, "_", "-")) %>%
+  left_join(
+    metadata %>% 
+    select(-c(Cluster, Sample2))
+  )
+
+write_tsv(borneo, "outputs/admix_mf_mn_mix.tsv")
+
+# Clusters for population specific filters
+
+admix_clusters %>%
+    filter(Cluster == "Mn" | Cluster == "Peninsular") %>%
+    left_join(
+        read.table("cleaned.fam") %>%
+            mutate(Sample = V1) 
+    ) %>%
+    select(V1:V5) %>%
+    write_tsv("Exclude_for_Mf.tsv")
+
+admix_clusters %>%
+    filter(Cluster == "Mf" | Cluster == "Peninsular") %>%
+    left_join(
+        read.table("cleaned.fam") %>%
+            mutate(Sample = V1) 
+    ) %>%
+    select(V1:V5) %>%
+    write_tsv("Exclude_for_Mn.tsv")
+
+admix_clusters %>%
+    filter(Cluster == "Mn" | Cluster == "Mf") %>%
+    left_join(
+        read.table("cleaned.fam") %>%
+            mutate(Sample = V1) 
+    ) %>%
+    select(V1:V5) %>%
+    write_tsv("Exclude_for_Pen.tsv")
+    
+
+# PCA
+
+## Read in data
+pca <- read_table("Pk.eigenvec", col_names=F) %>%
+    select(-1) %>%
+    rename("sampleid" = "X2") %>%
+    rename_at(vars(starts_with("X")), ~str_replace(., "X.*", paste0("PC", seq_along(.))))
+
+eigenval <- scan("Pk.eigenval")
+
+pca <- pca %>%
+    rename(Sample = sampleid) %>%
+    mutate(Sample2 = str_remove(Sample, "_DK.*")) %>% # we need the original names downstream for the NJT
+    left_join(
+        metadata %>% mutate(Sample2 = Sample), 
+        by = "Sample2"
+        ) 
+
+
+## Percentage variance explained by each PC
+pve <- data.frame(PC = 1:20, pve = eigenval/sum(eigenval)*100)
+
+pve_plot <- data.frame(PC = 1:20, pve = eigenval/sum(eigenval)*100) %>%
+    ggplot(aes(PC, pve)) + 
+    geom_bar(stat = "identity") + 
+    ylab("Percentage variance explained") + 
+    theme_light()
+
+ggsave("outputs/percentage_variance_explained.png", dpi=300, pve_plot)
+
+
+## PCA - clusters
+pca <- pca %>% 
+    mutate(Cluster = ifelse(PC1 < 0 & PC2 < 0.04, "Mf", 
+        ifelse(PC1 > 0.04 & PC2 < 0.04, "Mn", 
+        ifelse(PC2 > 0.1, "Peninsular", 
+        ifelse(PC1 > 0 & PC1 < 0.04 & PC2 < 0.04, "Mixed", .$Cluster))))) 
+
+pca_plot <- ggplot(pca, aes(PC1, PC2, colour = Cluster)) + 
+    geom_point(size = 3) +
+    scale_color_manual(values = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF")) +
+    coord_equal() + 
+    theme_light() + 
+    xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) + 
+    ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))
+
+ggsave("outputs/pca_cluster.png", dpi = 600, pca_plot)
+
+## PCA - districts
+pve <- data.frame(PC = 1:20, pve = eigenval/sum(eigenval)*100)
+
+pca_plot <- ggplot(pca, aes(PC1, PC2, colour = district)) + 
+    geom_point(size = 3) +
+    scale_color_viridis_d() +
+    coord_equal() + 
+    theme_light() + 
+    xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) + 
+    ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))
+
+ggsave("outputs/pca_districts.png", dpi = 600, pca_plot)
+
+## PCA - sevemal
+pca_plot <- ggplot(pca, aes(PC1, PC2, colour = sevemal)) + 
+    geom_jitter(height = 0.02, width = 0.02) +
+    coord_equal() + 
+    theme_light() + 
+    scale_color_manual(values = c("#440154FF", "#1F968BFF")) +
+    xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) + 
+    ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))
+
+ggsave("outputs/pca_sevemal.png", dpi = 600, pca_plot)
+
+# Updated metadata with clusters
+metadata <- pca %>%
+    select(Sample.x, enroldate:ncol(.)) %>%
+    rename(Sample = Sample.x)
+
+# Summarise sample clusters
+metadata  %>% 
+    group_by(Cluster) %>%
+    summarise(n = n()) %>% 
+    write_tsv("outputs/sample_cluster_sumamry.tsv")
+
+
+
+############################################################################################################################################################
+
+# MDS - clusters
+
+## Read in data
+mds <- read_table("Pk.mds", col_names=T) %>%
+    select(-c("FID", "X14")) %>%
+    rename("sampleid" = "IID") %>%
+    rename_at(vars(starts_with("C")), ~str_replace(., "C", "MDS"))
+
+## Add metadata 
+mds <- mds %>%
+    rename(Sample = sampleid) %>% 
+    left_join(metadata)
+
+## Plot MDS
+mds_plot <- ggplot(mds, aes(MDS1, MDS2, colour = Cluster)) + 
+    geom_point(size = 3) +
+    scale_color_viridis_d() +
+    coord_equal() + 
+    theme_light()
+
+ggsave("outputs/mds_cluster.png", dpi=600, mds_plot)
+
+############################################################################################################################################################
+
+
+# Neighbour-joining tree
+
+## Create distance matrix from PLINK data and build NJT
+NJT_ID <- read_table("Pk.dist.id", col_names=F) %>%
+    as.data.frame() %>%
+    mutate_all(~str_remove(., "_DK.*")) 
+
+NJT_matrix <- read_table("Pk.dist", col_names=NJT_ID$X1) %>%
+        as.data.frame() %>%
+        add_column(Row_Names = NJT_ID$X1) %>%
+        column_to_rownames("Row_Names") %>%
+        as.matrix()
+
+## Plot tree
+
+#Plot 
+options(ignore.negative.edge=TRUE)
+
+# Clusters
+# Read in metadata and assign colours - based on clusters
+NJT_metadata <- metadata %>% 
+    relocate(Sample) %>% 
+    mutate(Sample = str_remove(Sample, "_DK.*")) %>% # for compatbility of datasets
+    mutate(Cluster = ifelse(is.na(Cluster), "Missing", .$Cluster)) %>% # if not reassigned the final argument of the next line does not work
+    mutate(Colour = ifelse(Cluster == "Mf", "#440154FF", ifelse(Cluster == "Mn", "#39568CFF", ifelse(Cluster == "Peninsular", "#1F968BFF", "#808080"))))
+
+# Generate NJT and reorder outer to inner edges
+NJT_tree <- nj(NJT_matrix) %>% 
+       reorder.phylo(order = "postorder") 
+
+# Get tip colours by joining metadata and tip labels
+tip_colours <- NJT_tree$tip.label %>% 
+    as.data.frame() %>% 
+    rename(Sample = ".") %>%
+    left_join(
+        NJT_metadata %>% 
+            select(Sample, Colour)
+        ) %>% 
+    select(Colour) %>% 
+    mutate(Colour = ifelse(is.na(Colour), "#808080", .$Colour)) %>%
+    pull()
+
+# Combine tip colours and edge IDs - gives list of colours for each edge, with #### representing missing values (ie internal edges)
+edge_colours <- tip_colours[NJT_tree$edge[, 2]]
+edge_colours[is.na(edge_colours)] <- "####"
+
+# Loop through each edge and assign colours to internal edges dependent on the nodes that branch from it (ie if two nodes/edges of the same colour branch from the same node/edge, then assign that branch with the colour of the two nodes/edges)
+for (edge in 1:nrow(NJT_tree$edge)) {
+    if (edge_colours[edge] == "####") { 
+        nodes <- which(NJT_tree$edge[, 1] == NJT_tree$edge[edge, 2]) # creates object of all the nodes that have multiple branches coming from them
+        if (edge_colours[nodes[1]] == edge_colours[nodes[2]]) { # if the colour of the node in the first column = the second column 
+            edge_colours[edge] <- edge_colours[nodes[1]] # make the edge that they branch from the same colour
+            } else {
+            edge_colours[edge] <- "#808080" # otherwise we make it grey - this object has ALL colours for ALL nodes
+            }
+        }
+    }
+
+NJT_tree_colours <- edge_colours %>% 
+    as.data.frame() %>%
+    cbind(as.data.frame(NJT_tree$edge[, 2])) %>% # joining the resulting colours (for ALL nodes) to the edges data in the original tree - so that when we plot it assigns the correct colour to the correct edge
+    rename(Colour = ".", node = "NJT_tree$edge[, 2]") %>% 
+    relocate(node) # might not be needed...
+
+NJT_tree_plot <- ggtree(NJT_tree, layout = "daylight", size = 0.5) %<+% NJT_tree_colours + 
+    aes(colour = I(Colour)) 
+
+ggsave("outputs/njt_tree_cluster_unrooted.png", dpi = 300, NJT_tree_plot)
+
+
+# Tree with sevemal
+
+NJT_metadata <- metadata %>% 
+    relocate(Sample) %>% 
+    mutate(Sample = str_remove(Sample, "_DK.*")) %>% # for compatbility of datasets
+    mutate(sevemal = ifelse(is.na(sevemal), "Missing", .$sevemal)) %>% # if not reassigned the final argument of the next line does not work
+    mutate(Colour = ifelse(sevemal == "SM", "#440154FF", ifelse(sevemal == "UM", "#39568CFF", "#808080")))
+
+# Generate NJT and reorder outer to inner edges
+NJT_tree <- nj(NJT_matrix) %>% 
+       reorder.phylo(order = "postorder") 
+
+# Get tip colours by joining metadata and tip labels
+tip_colours <- NJT_tree$tip.label %>% 
+    as.data.frame() %>% 
+    rename(Sample = ".") %>%
+    left_join(
+        NJT_metadata %>% 
+            select(Sample, Colour)
+        ) %>% 
+    select(Colour) %>% 
+    mutate(Colour = ifelse(is.na(Colour), "#808080", .$Colour)) %>%
+    pull()
+
+# Combine tip colours and edge IDs - gives list of colours for each edge, with #### representing missing values (ie internal edges)
+edge_colours <- tip_colours[NJT_tree$edge[, 2]]
+edge_colours[is.na(edge_colours)] <- "####"
+
+# Loop through each edge and assign colours to internal edges dependent on the nodes that branch from it (ie if two nodes/edges of the same colour branch from the same node/edge, then assign that branch with the colour of the two nodes/edges)
+for (edge in 1:nrow(NJT_tree$edge)) {
+    if (edge_colours[edge] == "####") { 
+        nodes <- which(NJT_tree$edge[, 1] == NJT_tree$edge[edge, 2]) # creates object of all the nodes that have multiple branches coming from them
+        if (edge_colours[nodes[1]] == edge_colours[nodes[2]]) { # if the colour of the node in the first column = the second column 
+            edge_colours[edge] <- edge_colours[nodes[1]] # make the edge that they branch from the same colour
+            } else {
+            edge_colours[edge] <- "#808080" # otherwise we make it grey - this object has ALL colours for ALL nodes
+            }
+        }
+    }
+
+NJT_tree_colours <- edge_colours %>% 
+    as.data.frame() %>%
+    cbind(as.data.frame(NJT_tree$edge[, 2])) %>% # joining the resulting colours (for ALL nodes) to the edges data in the original tree - so that when we plot it assigns the correct colour to the correct edge
+    rename(Colour = ".", node = "NJT_tree$edge[, 2]") %>% 
+    relocate(node) # might not be needed...
+
+NJT_tree_plot <- ggtree(NJT_tree, layout = "daylight", size = 0.5) %<+% NJT_tree_colours + 
+    aes(colour = I(Colour)) 
+
+ggsave("outputs/njt_tree_sevemal_unrooted.png", dpi = 300, NJT_tree_plot)
+
+
+# Tree with sevemal
+NJT_metadata <- metadata %>%
+    mutate(parasitemia = as.numeric(parasitemia)) %>%
+    mutate(bin = cut_interval(parasitemia, 20)) %>%
+    group_by(bin) %>%
+    add_column(bins = 1:nrow(.)) %>%
+    ungroup() 
+
+NJT_tree_plot <- ggtree(NJT_tree, layout="daylight", size = 0.5, aes(colour = bins)) %<+% NJT_metadata +
+    theme(legend.position = "right", 
+    legend.title = element_blank(), 
+    legend.key = element_blank()) +
+    scale_color_viridis_c()
+    
+ggsave("outputs/njt_tree_para_unrooted.png", dpi = 300, NJT_tree_plot)
+```
+
+# Apply cluster specific filters for MAF - using ADMIXTURE (above) to define clusters/populations
+
+ - genotype and sample missingness filters
+ - MAF 0.05 filters for the clusters independently
+    - 'Exclude' samples are generated in the fastLMM Rmd 
+ - merge outputs from MAF filters 
+ - run genotype missingness filter again - as some variants might not overlap because of the application to the MAF filters to the clusters
+
+```{bash,eval=F}
+mkdir cluster_specific_maf_filters
+mkdir cluster_specific_maf_filters/Mf
+mkdir cluster_specific_maf_filters/Mn
+mkdir cluster_specific_maf_filters/Pen
+
+plink --bfile Pk --recode --out Pk
+plink --file Pk --geno 0.20 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --mind 0.20 --make-bed --out cleaned
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mf.tsv --out cluster_specific_maf_filters/Mf
+plink --file cluster_specific_maf_filters/Mf --maf 0.05 --make-bed --out cluster_specific_maf_filters/Mf
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mn.tsv --out cluster_specific_maf_filters/Mn
+plink --file cluster_specific_maf_filters/Mn --maf 0.05 --make-bed --out cluster_specific_maf_filters/Mn
+
+plink --bfile cleaned --recode  --remove Exclude_for_Pen.tsv --out cluster_specific_maf_filters/Pen
+plink --file cluster_specific_maf_filters/Pen --maf 0.05 --make-bed --out cluster_specific_maf_filters/Pen
+
+cd cluster_specific_maf_filters
+
+ls *bed | sed 's/.bed//g' > cleaned_cluster_files.txt
+
+plink --merge-list cleaned_cluster_files.txt -make-bed --out clusters_combined
+```
+
+
+# Tess3r
+
+## Create ped and map files from maf-specific fitlers
+
+ - filter out samples with missing GIS 
+
+```{bash,eval=F}
+plink --bfile cluster_specific_maf_filters/clusters_combined --recode --remove spatial/tess3r/samples_to_exclude_tess3r.txt --tab --out cluster_specific_maf_filters/clusters_combined
+sed 's/*/0/g' cluster_specific_maf_filters/clusters_combined.ped > spatial/tess3r/clusters_combined_fixed.ped
+```
+
+
+
+plink --file Pk --keep spatial/tess3r/no_missingness/complete_gis_na_omit.fam --geno 0.20 --make-bed --out spatial/tess3r/no_missingness/cleaned
+cd spatial/tess3r/no_missingness/
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --maf 0.05 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --mind 0.005 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --geno 0 --make-bed --out cleaned
+
+
+
+
+
+
+
+# EEMS 
+
+```{bash,eval=F}
+mkdir spatial/eems
+plink --bfile cluster_specific_maf_filters/clusters_combined --recode --keep spatial/eems/samples_to_keep.txt --make-bed --out spatial/eems/clusters_combined
+```
+
+
+
+
+
+
+
+# Exploring connectivity with identity by descent using hmmIBD
+
+Here we explore clustering using IBD instead of IBS. hmmIBD uses a  hidden Markov model to detect segments of shared ancestry in genetics sequences
+
+## Convert VCF to correct format for [hmmIBD](https://github.com/glipsnort/hmmIBD)
+
+Filtering
+    - need to first create a list of samples to exclude - use PLINK cleaned.fam data to do an inverse fgrep of the original file list in Pk.fam
+    - filter out variants based on MAF and missingess - from BCF file
+
+hmmIBD format:
+ - tab-delimited text file, with one SNP per line. 
+ - First two columns are chromosome and position, followed by one sample per column. 
+ - Header line, with sample names. 
+ - Genotypes are coded by number: 
+    - -1 for missing data
+    - 0 for the first allele
+    - 1 for the second, etc. 
+ - SNPs and indels can be treated as equal.
+ - Variants must be in chromosome and position order.
+ - Variants can have between two and eight alleles.
+
+
+####################### WIP
+
+
+
+```{bash,eval=F}
+mkdir hmmIBD
+awk '{print $1}' cluster_specific_maf_filters/clusters_combined.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > hmmIBD/exclude.txt
+rm -f exclude_tmp1.txt exclude_tmp2.txt
+
+awk '{print $2}' cluster_specific_maf_filters/clusters_combined.fam | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > hmmIBD/grep_patterns.tsv
+
+bcftools view -o hmmIBD/Consensus_SNPs_subset_no_MOI.vcf Consensus_SNPs_subset_no_MOI.vcf.gz
+
+Rscript /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/scripts/06_Analysis/hmmIBD_genotype_file.R 
+cd hmmIBD
+export PATH=$PATH:/g/data/pq84/bin/hmmIBD/   
+hmmIBD -i hmmIBD.tsv -b exclude.txt -o Pk
+```
+
+## Running with a stricter sample missingness (5%) filter & remove lab strains & duplicate samples 
+
+```{bash,eval=F}
+mkdir cluster_specific_maf_filters/sample_miss_5 
+
+plink --bfile cluster_specific_maf_filters/clusters_combined --recode --out cluster_specific_maf_filters/sample_miss_5/cleaned
+plink --file cluster_specific_maf_filters/sample_miss_5/cleaned --mind 0.05 --make-bed --out cluster_specific_maf_filters/sample_miss_5/cleaned
+
+mkdir hmmIBD/sample_miss_5/
+
+awk '{print $1}' cluster_specific_maf_filters/sample_miss_5/clusters_combined.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > hmmIBD/sample_miss_5/exclude_tmp3.txt
+cat hmmIBD/sample_miss_5/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > hmmIBD/sample_miss_5/exclude.txt
+rm -f exclude_tmp1.txt exclude_tmp2.txt exclude_tmp3.txt
+
+awk '{print $2}' cluster_specific_maf_filters/sample_miss_5/clusters_combined.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > hmmIBD/sample_miss_5/grep_patterns.tsv
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD/hmmIBD_genotype_file.R 
+
+cd hmmIBD/sample_miss_5/
+hmmIBD -i hmmIBD.tsv -b exclude.txt -o Pk
+```
+
+
+## 2 options for generating genotype file - trying both
+```{R,eval=F}
+# Packages
+library(dplyr)
+library(readr)
+library(stringr)
+library(data.table)
+
+# Read in and wrangle VCF
+
+read_tsv("hmmIBD/grep_patterns.tsv", col_names = c("CHROM", "POS")) %>%
+        left_join(
+                read_table("PK_consensus_no_MOI.vcf", skip = 87) %>%
+                rename("CHROM" = `#CHROM`) # this first section selects only variants that passed the PLINK filters we applied
+        ) %>%
+        mutate(CHROM = str_remove(CHROM, "ordered_PKNH_"),
+        CHROM = str_remove(CHROM, "_v2")) %>%
+        mutate_at(c(10:ncol(.)), ~str_remove(., ":.*")) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "1/1" | . %like% "1/0" | . %like% "0/1" , "1", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "2/2" | . %like% "2/0" | . %like% "0/2" , "2", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "3/3" | . %like% "3/0" | . %like% "0/3" , "3", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "4/4" | . %like% "4/0" | . %like% "0/4" , "4", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "0/0" , "0", .)) %>% # 0 for reference allele
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "./." , "-1", .)) %>% # for missing 
+        select(-c(3:9)) %>%
+        arrange(CHROM, POS) %>%
+        write_tsv("hmmIBD/hmmIBD.tsv")   
+```
+
+
+```{bash,eval=F}
+awk '{print $1}' cluster_specific_maf_filters/clusters_combined.fam > hmmIBD/hmmIBD_sample_list.txt
+
+python3 /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD/vcf2hmm.py -s hmmIBD/hmmIBD_sample_list.txt Consensus_SNPs_subset.vcf.gz hmmIBD/test_python_geno
+```
+
+
+####################### WIP
+
+
+# Calculate IBD stats and generate plots 
+
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD_stats.R
+/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD_plots.R
+
+
+
+
+
+
+
+
+
+
+
+##################################################################### 
+
+# Fst statistic - Mn vs Mf
+
+## MAF specific filters 
+
+Use clonal_dups.txt to filter out clonal samples - messes with alogrithm.
+
+
+First create a file that contains the clusters you want use for the Fst. You can ammend the Pk.fam file (or metadata), but the file needs to be structured in PLINKs weird FID-IID-Cluster format.
+
+Steps:
+    - Apply filter (as done previously)
+    - Attach metadata to fam file (as done previously)
+    - Define clusters using metadata
+    - Calculate and plot Fst for a-priori clusters defiend through ADMIXTURE (sample_clusters.txt)
+
+```{bash,eval=F}
+tail -n +2 outputs/admix_clusters.tsv | awk '{print $1 "\t" $1 "\t" $5}' > sample_clusters.txt
+grep 'Peninsular' sample_clusters.txt | awk '{print $1}' | cat clonal_dups.txt dups_from_naming_error.txt - | grep -f - Pk.fam > exclude_samples.txt
+
+plink --bfile cluster_specific_maf_filters/clusters_combined \
+  --within sample_clusters.txt \
+  --remove exclude_samples.txt \
+  --fst \
+  --allow-no-sex \
+  --out Pk
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/Fst_plot.R
+```
+
+Mean Fst estimate: 0.154
+Weighted Fst estimate: 0.231398
+
+### Plot Fst 
+
+Fst_plot.R
+
+```{R,eval=F}
+library(tidyverse)
+
+Fst_matrix <- read_table("Pk.fst", col_names=T) %>%
+    mutate(CHR = str_remove(SNP, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2.*"))
+
+plot_data <- Fst_matrix %>%
+    filter(FST != "nan") %>%
+    filter(FST > 0) %>%
+    mutate(FST = as.numeric(FST)) %>%
+    arrange(CHR, POS) %>%
+    add_column(ROW = 1:nrow(.)) 
+
+x_axis <- plot_data %>%
+    group_by(CHR) %>%
+    summarise(ROW = median(ROW)) %>%
+    mutate(CHR = str_remove(CHR, "^0"))
+
+Fst_plot <- plot_data %>%
+    ggplot(aes(x = ROW, y = FST, colour = CHR)) +
+    geom_point() +
+    theme(legend.position = "none", text = element_text(size = 25)) +
+    ylab("Fst") +
+    xlab("Chromosome")  +
+    scale_color_viridis_d("Chr") +
+    guides(color=guide_legend(nrow=1, byrow=TRUE)) +
+    scale_x_continuous(breaks = x_axis$ROW, labels = x_axis$CHR)
+
+ggsave("outputs/Fst_manhattan_mf_vs_mn.png", dpi = 300, width = 20, Fst_plot)
+
+Fst_matrix %>%
+    mutate(FST = as.numeric(FST)) %>%
+    summarise(mean_fst = mean(FST, na.rm = TRUE)) %>%
+    write_tsv("outputs/Fst_mean_mf_vs_mn.txt")
+```
+
+## High quality GWAS-based filters 
+
+```{R,eval=F}
+mkdir high_quality_set
+
+plink --file Pk --geno 0.20 --make-bed --out high_quality_set/cleaned
+plink --bfile high_quality_set/cleaned --recode --out high_quality_set/cleaned
+plink --file high_quality_set/cleaned --mind 0.05 --make-bed --out high_quality_set/cleaned
+plink --bfile high_quality_set/cleaned --recode --out high_quality_set/cleaned
+plink --file high_quality_set/cleaned --geno 0.05 --make-bed --out high_quality_set/cleaned
+plink --file high_quality_set/cleaned --maf 0.05 --make-bed --out high_quality_set/cleaned
+
+plink --bfile high_quality_set/cleaned \
+  --within sample_clusters.txt \
+  --remove exclude_samples.txt \
+  --fst \
+  --allow-no-sex \
+  --out high_quality_set/Pk
+
+cd high_quality_set
+mkdir outputs
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/Fst_plot.R
+```
+
+##################################################################### WIP
+
+# Can we split the datasets temporally to make comparisons across time within clusters?
+
+```{R,eal=F}
+#Load packages
+library(tidyverse)
+library(ape)
+library(ggtree)
+library(viridis)
+
+## Metadata 
+metadata <- read_tsv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/full_metadata.tsv") %>% 
+    mutate(sevemal = ifelse(grepl("UM", sevemal), "UM", .$sevemal)) %>% 
+    mutate(sevemal = ifelse(sevemal == "1", "SM", ifelse(sevemal == "0", "UM", .$sevemal))) %>% 
+    rename(Sample = studycode) %>% 
+    mutate(district = str_to_title(district)) %>%
+    add_column(Cluster = NA)
+
+original_metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>%
+    select(1:3) %>%
+    mutate(subjectid = ifelse(str_length(subjectid) == 1, paste0("00", subjectid), # if subjectid length = 1 paste 00
+        ifelse(str_length(subjectid) == 2, paste0("0", subjectid), # if not, then if subjectid length = 2 paste 0
+        .$subjectid))) %>%
+    unite(Sample, c("group", "subjectid"), sep ="") %>% 
+    rename(Sample2 = sampleid)
+
+metadata <- metadata %>%
+    left_join(original_metadata) %>%
+    mutate(Sample2 = ifelse(is.na(Sample2), Sample, Sample2)) %>%
+    select(-Sample) %>%
+    rename(Sample = Sample2) %>%
+    relocate(Sample)
+    
+    
+archived_data <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(district = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) %>% 
+        rbind(read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        rename(district = Location) %>%
+        add_column(Cluster = "Peninsular")
+        ) %>%
+        add_column(enroldate=NA, age = NA, sex=NA, ethnicity=NA, village=NA, occupation=NA, Hb=NA, platelets=NA,
+        parasitemia=NA, fever_days=NA, respiratory_rate=NA, oxygen_saturation=NA, systolic_BP=NA, diastolic_BP=NA, G6PD=NA,
+        pregnant=NA, creatinine=NA, study=NA, bicarbonate=NA, PCR=NA, sevemal=NA, bilirubin=NA, glucose=NA, bleeding_severity=NA)
+
+
+metadata <- metadata %>%
+    rbind(archived_data) %>%
+  mutate_at(c("district", "village"), str_to_title) %>%
+  mutate(Sample2 = Sample) %>% 
+  mutate(district = ifelse(district == "Kota Murudu", "Kota Marudu", .$district)) %>% 
+  mutate(district = ifelse(district == "Sungai Siuit", "Sungai Siput", .$district))
+
+# Add admix based clusters (rather than PCA/NJT defined)
+admix <- read_tsv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/Population_genetics/outputs/admix_clusters.tsv") 
+
+cluster_temporal <- admix %>%
+  mutate(Sample = str_remove(Sample, "_DK.*")) %>%
+  select(Sample, Cluster) %>%
+  left_join(
+    metadata %>%
+      select(Sample, enroldate, district)
+  ) %>%
+  filter(Cluster != "Peninsular") %>%
+  na.omit()
+
+
+# Plotting cluster numbers over time
+temporal_plot <- cluster_temporal %>%
+  ggplot(aes(x = enroldate, y = Cluster, colour = Cluster)) +
+  geom_point() +
+  scale_colour_manual(values = c("#440154FF", "#73D055FF")) +
+  xlab("Enrolement date")
+
+ggsave("outputs/temporal_points.png", dpi=300, temporal_plot, width = 20)
+
+temporal_plot <- cluster_temporal %>%
+  group_by(month = lubridate::floor_date(enroldate, "month"), Cluster) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x = month, y = Cluster, colour = Cluster, size = n)) +
+  geom_point() +
+  scale_colour_manual(values = c("#440154FF", "#73D055FF")) +
+  xlab("Enrolement date")
+
+ggsave("outputs/temporal_points_size.png", dpi=300, temporal_plot, width = 20)
+
+
+# Bar plot of half years and proportion of Mf to Mn
+
+temporal_plot <- cluster_temporal %>%
+  group_by(month = lubridate::floor_date(enroldate, "halfyear"), Cluster) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = Cluster, values_from = n) %>%
+  mutate(Mn = ifelse(is.na(Mn), 0, Mn)) %>%
+  mutate(Prop = Mn / (Mf + Mn) * 100) %>%
+  ggplot(aes(x = month, y = Prop)) +
+  geom_col(fill = "#440154FF") +
+  geom_point(aes(x = month, y = Prop, size = Mf+Mn), colour = "#73D055FF") +
+  xlab("Half-year periods") +
+  ylab("Proportion of Mn")
+
+ggsave("outputs/temporal_prop_mn.png", dpi=300, temporal_plot, width = 10)
+
+
+
+
+# Defining temporal clusters 
+mf_temporal <- cluster_temporal %>% 
+  filter(Cluster == "Mf") %>%
+  mutate(temporal_group = ifelse(enroldate > "2016-06-06", "group_1", 
+    ifelse(enroldate < "2016-06-06" & enroldate > "2012-06-06", "group_2", "group_3"))) 
+
+## Mf 1
+mf_temporal_1 <- mf_temporal %>%
+  filter(temporal_group == "group_1" | temporal_group == "group_2") %>%
+  select(Sample, temporal_group) %>%
+  left_join(
+    admix %>% 
+      mutate(Sample2 = Sample) %>%
+      mutate(Sample = str_remove(Sample, "_DK.*"))
+  ) %>%
+  mutate(Sample = Sample2) %>%
+  select(Sample, Sample2, temporal_group) 
+
+mf_temporal_1  %>%
+  write_tsv("high_quality_set/cluster_specific/Mf_comparison_1.txt", col_names = FALSE)
+
+read.table("high_quality_set/cleaned.fam") %>%
+  left_join(
+    mf_temporal_1 %>% 
+      rename(V1 = Sample) %>% 
+      select(-Sample2) %>%
+      mutate(temporal_group = "Yes")
+  ) %>%
+  filter(is.na(temporal_group)) %>%
+  select(-temporal_group) %>%
+  write_tsv("high_quality_set/cluster_specific/Mf_exclusion_1.txt")
+
+## Mf 2
+mf_temporal_2 <- mf_temporal %>%
+  filter(temporal_group == "group_3" | temporal_group == "group_2") %>%
+  select(Sample, temporal_group) %>%
+  left_join(
+    admix %>% 
+      mutate(Sample2 = Sample) %>%
+      mutate(Sample = str_remove(Sample, "_DK.*"))
+  ) %>%
+  mutate(Sample = Sample2) %>%
+  select(Sample, Sample2, temporal_group) 
+
+mf_temporal_2  %>%
+  write_tsv("high_quality_set/cluster_specific/Mf_comparison_2.txt", col_names = FALSE)
+
+read.table("high_quality_set/cleaned.fam") %>%
+  left_join(
+    mf_temporal_2 %>% 
+      rename(V1 = Sample) %>% 
+      select(-Sample2) %>%
+      mutate(temporal_group = "Yes")
+  ) %>%
+  filter(is.na(temporal_group)) %>%
+  select(-temporal_group) %>%
+  write_tsv("high_quality_set/cluster_specific/Mf_exclusion_2.txt")
+```
+
+sample clusters file - use R to create
+exclude samples file - negative grep fam file using above file to get 
+
+```{R,eval=F}
+plink --bfile high_quality_set/cleaned \
+  --within high_quality_set/cluster_specific/Mf_comparison_1.txt \
+  --remove high_quality_set/cluster_specific/Mf_exclusion_1.txt \
+  --fst \
+  --allow-no-sex \
+  --out high_quality_set/cluster_specific/cleaned
+
+cd high_quality_set/cluster_specific/
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/Fst_plot.R
+
+mkdir Mf_1
+mv Mf_1* Mf_1
+```
+
+```{R,eval=F}
+plink --bfile high_quality_set/cleaned \
+  --within high_quality_set/cluster_specific/Mf_comparison_2.txt \
+  --remove high_quality_set/cluster_specific/Mf_exclusion_2.txt \
+  --fst \
+  --allow-no-sex \
+  --out high_quality_set/cluster_specific/cleaned
+
+cd high_quality_set/cluster_specific/
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/Fst_plot.R
+
+mkdir Mf_2
+mv Fst* Mf_2
+```
+
+
+##################################################################### 
+
+# Variant selection - [rehh](https://cran.r-project.org/web/packages/rehh/vignettes/rehh.html#LoadData)
+
+Use clonal_dups.txt to filter out clonal samples - messes with alogrithm.
+
+
+Since the whole file is read in for rehh, even though you can only look at a single chr at a time, it is advisable to split large data sets into chromosome-specific files.
+In addition, computing Rsb requires two data frames containing each the inES statistics of one population as obtained by the scan_hh() function - THUS - need to create separate VCF files for the different clusters that we want to compare.
+
+Steps:
+    - filter VCF using high quality GWAS type set of variants produced through plink (high_quality_set)
+    - remove samples not in high quality set, dups_from_naming_error.txt, lab_isolates.txt, clonal_dups.txt
+    - covert missing data to reference - otherwise they're filtered out by rehh
+    - create a lsit of the chromosomes
+    - get a list of samples to be included (-S) in the rehh analysis (Mn of Mf)
+    - subset VCF into a VCF for individual chromosomes
+    - subset to clusters
+
+**Need to ammend the sn and xl line manually based on outputs of "cat"**
+
+
+bcftools view --force-samples -R selection/snp_filter.txt -S ^selection/exclude.txt -o selection/selection.vcf.gz Consensus_SNPs_subset_no_MOI.vcf.gz
+
+
+```{bash}
+mkdir selection
+awk '{print $2}' high_quality_set/cleaned.bim | sed 's/:/\t/g' | awk '{print $1 "\t" $2}' > selection/snp_filter.txt
+
+awk '{print $1}' high_quality_set/cleaned.fam > selection/exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > selection/exclude_tmp2.txt
+fgrep -v -f selection/exclude_tmp1.txt selection/exclude_tmp2.txt > selection/exclude_tmp3.txt
+cat selection/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt clonal_dups.txt > selection/exclude.txt
+rm -f selection/exclude_tmp1.txt selection/exclude_tmp2.txt selection/exclude_tmp3.txt
+
+bcftools view --force-samples -R selection/snp_filter.txt -S ^selection/exclude.txt Consensus_SNPs_subset_no_MOI.vcf.gz | bcftools +missing2ref -o selection/selection.vcf.gz
+
+bcftools index selection/selection.vcf.gz
+
+bcftools view selection/selection.vcf.gz | grep '##contig=<ID=ordered' | sed 's/##contig=<ID=//g' | sed 's/,.*//g' > selection/chromosome.txt
+
+cat sample_clusters.txt | awk '{print "-sn " $1}' | tr '\n' ' '
+
+for i in $(cat selection/chromosome.txt)
+    do 
+        bcftools view -r $i -o selection/${i}.vcf.gz selection/selection.vcf.gz
+    done 
+
+grep Mn sample_clusters.txt | awk '{print $1}' > selection/mn_samples.txt 
+grep Mf sample_clusters.txt | awk '{print $1}' > selection/mf_samples.txt 
+
+cd selection
+ls *v2.vcf.gz > vcf_list.txt
+
+for i in $(cat vcf_list.txt)
+    do  
+        bcftools view --force-samples -S mn_samples.txt -o ${i%.vcf.gz}_Mn.vcf.gz $i
+    done
+
+for i in $(cat vcf_list.txt)
+    do  
+        bcftools view --force-samples -S mf_samples.txt -o ${i%.vcf.gz}_Mf.vcf.gz $i
+    done
+
+```
+
+Some of the different stats that can be calculated with rehh:
+    - EHH - Homozygosity (EHH) is defined as the probability that two randomly chosen chromosomes, carrying the core allele, are homozygous over a given surrounding chromosomal region.
+    - iHH - EHH starts at 1 and decays to 0 with increasing distance of t from the focal marker s. For a given core allele, the integrated EHH (iHH) is defined as the area under the EHH curve which, in turn, is defined by the EHH values and associated chromosomal positions.
+    - EHHS - quantity is aimed to reflect the probability that any two randomly chosen chromosomes from a population are homozygous over a given surrounding chromosomal region of a focal marker. 
+    - iES - Like EHH, EHHS has its maximum at the focal marker and decays to 0 with increasing distance from the focal marker. For a given focal marker, analogously to iHH, iES is defined as the integrated EHHS.
+
+ Rsb - The ratio of EHHs between populations, based on LD and utilized as a complement to iHS for pairwise population comparisons (Rsb), is an approach employed to pinpoint recent selective sweeps resulting in the near or complete fixation of an allele within a population.
+ xp-EHH - detect selective sweeps in which the selected allele has approached or achieved fixation in one population but remains polymorphic in the other. The method is based on cross-population comparison of two populations to discover the important alleles. 
+
+```{R,eval=F}
+# Packages
+library(rehh)
+library(tidyverse)
+library(data.table)
+library(R.utils)
+
+# WHOLE GENOME iHS
+
+## need to read in chr files independently and build up an object resulting from the scan_hh outputs
+### first create an empty df to be appended in the loop and a list of chr names
+### the loop then creates the vcf file name (hap_file), and reads in the file to hh, which is then parsed into the scan_hh function to produce an object i that is appended to the growing wgscan object
+### the resulting wgscan produces the same results as the scan_hh object above
+### this can then be parsed into ihh2ihs
+
+chromsomes_files <- c("ordered_PKNH_01_v2", "ordered_PKNH_02_v2", "ordered_PKNH_03_v2", "ordered_PKNH_04_v2", "ordered_PKNH_05_v2",
+    "ordered_PKNH_06_v2", "ordered_PKNH_07_v2", "ordered_PKNH_08_v2", "ordered_PKNH_09_v2", "ordered_PKNH_10_v2", "ordered_PKNH_11_v2",
+    "ordered_PKNH_12_v2", "ordered_PKNH_13_v2", "ordered_PKNH_14_v2")
+
+wgscan <- tibble("CHR" = NA, "POSITION" = NA, "FREQ_A" = NA, "FREQ_D" = NA, "NHAPLO_A" = NA, "NHAPLO_D" = NA, "IHH_A" = NA, "IHH_D" = NA, "IES" = NA, "INES" = NA)
+
+for(i in chromsomes_files) {
+    # haplotype file name for each chromosome
+    hap_file = paste(i, ".vcf.gz", sep = "") # filename pattern
+    # create internal representation
+    hh <- data2haplohh(hap_file = hap_file, 
+                    chr.name = i, 
+                    polarize_vcf = FALSE, # if the AA key is absent
+                    min_perc_geno.mrk = 100, # discard markers genotyped on < 100% of haplotypes
+                    min_maf = 0.05, # discard markers with a minor allele frequency of < 0.05)
+                    vcf_reader = "data.table") # use this package
+    scan <- scan_hh(hh) # perform scan on a single chromosome (calculate iHH/iES values)
+    wgscan <- wgscan %>% # append the wgscan object every round with additional data
+    rbind(scan)
+}
+
+wgs_ihs <- wgscan %>%
+    na.omit() %>%
+    ihh2ihs(., min_maf = 0.05, # default
+            freqbin = 0.025 # default
+            )
+
+### Output is a list with two elements:
+### ihs: a data frame with iHS and corresponding p-value piHS (p-value in a −log10 scale assuming the iHS are normally distributed under the neutral hypothesis)
+### frequency.class: a data frame summarizing the derived allele frequency bins used for standardization and mean and standard deviation of the un-standardized values
+wgs_ihs$ihs
+wgs_ihs$frequency.class
+
+
+# Scan for candidate regions 
+## First update iHS table so that its compatible
+wgs_ihs_2 <- wgs_ihs
+wgs_ihs_2$ihs <- wgs_ihs_2$ihs %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    as.data.frame()
+
+candidate_regions <- calc_candidate_regions(wgs_ihs_2,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 3) %>%
+                                 add_column(Stat = "iHS") 
+
+selection_plots <- function(DATA, MODEL){
+  plot_data <- DATA %>%
+    na.omit() %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    arrange(CHR, POSITION) %>%
+    mutate(POS = 1:nrow(.)) %>%
+    mutate(CHR = as.factor(CHR))
+
+  x_axis <- plot_data %>%
+    group_by(CHR) %>%
+    summarise(POS = median(POS)) %>%
+    mutate(CHR = str_remove(CHR, "^0"))
+
+  hline <- plot_data %>% 
+    summarise(enframe(quantile(!!sym(MODEL), c(0.001, 0.5, 0.999)), "quantile", MODEL))
+
+  selection_plot <- plot_data %>%
+    ggplot(aes(x = POS, y = !!sym(MODEL), colour = CHR)) +
+    geom_point() + 
+    theme(legend.position = "none") +
+    scale_colour_manual(values = c("#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF")) +
+    scale_x_continuous(breaks = x_axis$POS, labels = x_axis$CHR) +
+    xlab("Position") +
+    ylab(MODEL) +
+    geom_hline(yintercept = c(as.numeric(hline[1,2]), as.numeric(hline[3,2])), linetype="dotted")
+
+  ggsave(paste0(MODEL, ".png"), dpi = 300, width = 16, selection_plot)
+
+  selection_plot <- plot_data %>%
+      ggplot(aes(x = POS, y = LOGPVALUE, colour = CHR)) +
+      geom_jitter() + 
+      theme(legend.position = "none") +
+      scale_x_continuous(breaks = x_axis$POS, labels = x_axis$CHR) +
+      scale_colour_manual(values = c("#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF")) +
+      xlab("Chromosomes") +
+      ylab(expression(MODEL ~ ~-log[10](italic(p))))
+
+  ggsave(paste0(MODEL, "_pvalue.png"), dpi = 300, width = 16, selection_plot)
+}
+
+
+selection_plots(wgs_ihs$ihs, "IHS")
+
+## Plotting using rehh
+
+png('iHS_rehh.png')
+manhattanplot(wgs_ihs)
+dev.off()
+
+png('iHS_p_rehh.png')
+manhattanplot(wgs_ihs, pval = TRUE, threshold = 4)
+dev.off()
+
+
+## QQ-Plot
+png('iHS_QQ.png')
+distribplot(wgs_ihs$ihs$IHS, 
+            xlab = "iHS", 
+            qqplot = TRUE)
+dev.off()
+
+#######################################################################################
+
+
+# Comparing EHH between clusters
+
+# CALCULATE Rsb  and XP-EHH
+
+## pairwise population statistic 
+## ratio of EHHS between populations
+
+chromsomes_files <- c("ordered_PKNH_01_v2", "ordered_PKNH_02_v2", "ordered_PKNH_03_v2", "ordered_PKNH_04_v2", "ordered_PKNH_05_v2",
+    "ordered_PKNH_06_v2", "ordered_PKNH_07_v2", "ordered_PKNH_08_v2", "ordered_PKNH_09_v2", "ordered_PKNH_10_v2", "ordered_PKNH_11_v2",
+    "ordered_PKNH_12_v2", "ordered_PKNH_13_v2", "ordered_PKNH_14_v2")
+
+### Mn
+wgscan_Mn <- tibble("CHR" = NA, "POSITION" = NA, "FREQ_A" = NA, "FREQ_D" = NA, "NHAPLO_A" = NA, "NHAPLO_D" = NA, "IHH_A" = NA, "IHH_D" = NA, "IES" = NA, "INES" = NA)
+
+for(i in chromsomes_files) {
+    # haplotype file name for each chromosome
+    hap_file = paste(i, "_Mn.vcf.gz", sep = "") # filename pattern
+    # create internal representation
+    hh <- data2haplohh(hap_file = hap_file, 
+                    chr.name = i, 
+                    polarize_vcf = FALSE, # if the AA key is absent
+                    min_perc_geno.mrk = 100, # discard markers genotyped on < 100% of haplotypes
+                    min_maf = 0.05, # discard markers with a minor allele frequency of < 0.05)
+                    vcf_reader = "data.table") # use this package
+    scan <- scan_hh(hh) # perform scan on a single chromosome (calculate iHH/iES values)
+    wgscan_Mn <- wgscan_Mn %>% # append the wgscan object every round with additional data
+    rbind(scan)
+}
+
+### Mf
+wgscan_Mf <- tibble("CHR" = NA, "POSITION" = NA, "FREQ_A" = NA, "FREQ_D" = NA, "NHAPLO_A" = NA, "NHAPLO_D" = NA, "IHH_A" = NA, "IHH_D" = NA, "IES" = NA, "INES" = NA)
+
+for(i in chromsomes_files) {
+    # haplotype file name for each chromosome
+    hap_file = paste(i, "_Mf.vcf.gz", sep = "") # filename pattern
+    # create internal representation
+    hh <- data2haplohh(hap_file = hap_file, 
+                    chr.name = i, 
+                    polarize_vcf = FALSE, # if the AA key is absent
+                    min_perc_geno.mrk = 100, # discard markers genotyped on < 100% of haplotypes
+                    min_maf = 0.05, # discard markers with a minor allele frequency of < 0.05)
+                    vcf_reader = "data.table") # use this package
+    scan <- scan_hh(hh) # perform scan on a single chromosome (calculate iHH/iES values)
+    wgscan_Mf <- wgscan_Mf %>% # append the wgscan object every round with additional data
+    rbind(scan)
+}
+
+# Rsb
+Rsb <- ines2rsb(
+        scan_pop1 = wgscan_Mn,
+        scan_pop2 = wgscan_Mf,
+        popname1 = "Mn",
+        popname = "Mf"
+    )
+
+# XP-EHH
+XP_EHH <- ies2xpehh(
+        scan_pop1 = wgscan_Mn,
+        scan_pop2 = wgscan_Mf,
+        popname1 = "Mn",
+        popname = "Mf"
+    )
+
+
+# Scan for candidate regions 
+candidate_regions_Rsb <- calc_candidate_regions(Rsb,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 2) %>%
+                                 add_column(Stat = "Rsb")
+
+candidate_regions_XP_EHH <- calc_candidate_regions(XP_EHH,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 2) %>%
+                                 add_column(Stat = "XP_EHH")
+
+## Save candidate regions for all stats
+candidate_regions %>%
+  rbind(candidate_regions_Rsb) %>%
+  rbind(candidate_regions_XP_EHH) %>%
+  write_tsv("candidate_regions_across_mdoels.tsv")
+
+# Plot Rsb and p-value
+Rsb %>%
+  mutate(Rsb = RSB_Mn_Mf) %>% 
+  selection_plots(., "Rsb")
+
+
+###### TEMP
+  plot_data <- Rsb %>%
+    na.omit() %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    arrange(CHR, POSITION) %>%
+    mutate(POS = 1:nrow(.)) %>%
+    mutate(CHR = as.factor(CHR))
+
+  x_axis <- plot_data %>%
+    group_by(CHR) %>%
+    summarise(POS = median(POS)) %>%
+    mutate(CHR = str_remove(CHR, "^0"))
+
+  selection_plot <- plot_data %>%
+      mutate(Rsb = RSB_Mn_Mf) %>%
+      ggplot(aes(x = POS, y = LOGPVALUE, colour = CHR)) +
+      geom_jitter() + 
+      theme(legend.position = "none") +
+      scale_x_continuous(breaks = x_axis$POS, labels = x_axis$CHR) +
+      scale_colour_manual(values = c("#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF")) +
+      xlab("Chromosomes") +
+      ylab(expression(Rsb ~ ~-log[10](italic(p))))
+
+  ggsave("Rsb_pvalue.png", dpi = 300, width = 16, selection_plot)
+###### TEMP
+
+#Plot XP-EHH and p-value
+
+XP_EHH %>%
+  rename("XP_EHH" = "XPEHH_Mn_Mf") %>% 
+  selection_plots(., "XP_EHH")
+
+# iHS for specific clusters
+
+## Mn
+wgs_ihs_Mn <- wgscan_Mn %>%
+    na.omit() %>%
+    ihh2ihs(., min_maf = 0.05, # default
+            freqbin = 0.025 # default
+            )
+
+# Scan for candidate regions 
+## First update iHS table so that its compatible
+wgs_ihs_Mn_2 <- wgs_ihs_Mn
+wgs_ihs_Mn_2$ihs <- wgs_ihs_Mn_2$ihs %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    as.data.frame()
+
+candidate_regions_iHS_Mn <- calc_candidate_regions(wgs_ihs_Mn_2,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 2) %>%
+                                 add_column(Stat = "iHS_Mn") 
+
+
+## Plot iHS and iHS p-values
+wgs_ihs_Mn$ihs %>%
+  rename(IHS_Mn = IHS) %>%
+  selection_plots("IHS_Mn")
+
+
+## Mf
+wgs_ihs_Mf <- wgscan_Mf %>%
+    na.omit() %>%
+    ihh2ihs(., min_maf = 0.05, # default
+            freqbin = 0.025 # default
+            )
+
+# Scan for candidate regions 
+## First update iHS table so that its compatible
+wgs_ihs_Mf_2 <- wgs_ihs_Mf
+wgs_ihs_Mf_2$ihs <- wgs_ihs_Mf_2$ihs %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    as.data.frame()
+
+candidate_regions_iHS_Mf <- calc_candidate_regions(wgs_ihs_Mf_2,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 2) %>%
+                                 add_column(Stat = "iHS_Mf") 
+
+
+## Plot iHS and iHS p-values
+wgs_ihs_Mf$ihs %>%
+  rename(IHS_Mf_test = IHS) %>%
+  selection_plots("IHS_Mf_test")
+
+
+## Candidate regions for Mf and Mn
+candidate_regions_iHS_Mn %>%
+  rbind(candidate_regions_iHS_Mf) %>%
+  write_tsv("candidate_regions_iHS_clusters.tsv")
+
+```
+
+
+
+
+#########################################################################################################
+
+# Introgression
+
+# Using hmmIBD method to generate genotype data
+
+```{bash,eval=F}
+mkdir introgression
+
+plink --bfile Pk --recode --out Pk
+plink --file Pk --geno 0.20 --make-bed --out introgression/cleaned
+plink --bfile introgression/cleaned --recode --out introgression/cleaned
+plink --file introgression/cleaned --mind 0.20 --make-bed --out introgression/cleaned
+plink --bfile introgression/cleaned --recode --out introgression/cleaned
+plink --file introgression/cleaned --maf 0.05 --make-bed --out introgression/cleaned
+
+awk '{print $1}' introgression/cleaned.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > introgression/exclude_tmp3.txt
+cat introgression/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > introgression/exclude.txt
+rm -f exclude_tmp1.txt exclude_tmp2.txt introgression/exclude_tmp3.txt
+
+awk '{print $2}' introgression/cleaned.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > introgression/grep_patterns.tsv
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD/hmmIBD_genotype_file.R 
+
+cd introgression
+hmmIBD -i hmmIBD.tsv -b exclude.txt
+```
+
+
+
+
+
+#########################################################################################################
+
+# Search for drug resistance markers (orthologues) from other Plasmodium species
+
+Using this [list](https://www.nature.com/articles/s41467-021-23422-3/tables/2) of Pv orthologues compiled by Diaz et al, we use a genotype file (subset) previously created for hmmIBD and add annotations inforamtion. By adding the metadata we can identify differences in SNP frequency between different clusters.
+
+
+```{bash,eval=F}
+cd /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/hmmIBD
+Rscript  /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance/drug_resistance_freq.R
+```
+**NB. More subsetting options are available in the script /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/scripts/06_Analysis/drug_resistance_freq.R**
+
+```{R,eval=F}
+# Packages
+library(tidyverse)
+library(janitor)
+library(dplyr)
+library(readr)
+library(stringr)
+library(data.table)
+
+# Read in genotype file previously created and subset to orthologue genes
+genotype_file <- read_tsv("hmmIBD.tsv")
+orthologue_genes <- genotype_file %>% 
+  filter(CHROM == "01" & POS > 381348 & POS < 384824) %>%
+  rbind(genotype_file %>% filter(CHROM == "05" & POS > 445338 & POS < 447218)) %>%
+  rbind(genotype_file %>% filter(CHROM == "08" & POS > 1408170 & POS < 1411360)) %>%
+  rbind(genotype_file %>% filter(CHROM == "10" & POS > 448974 & POS < 453368)) %>%
+  rbind(genotype_file %>% filter(CHROM == "13" & POS > 2302686 & POS < 2304038)) %>%
+  rbind(genotype_file %>% filter(CHROM == "14" & POS > 1308259 & POS < 1310954)) %>%
+  rbind(genotype_file %>% filter(CHROM == "14" & POS > 2116423 & POS < 2122473))
+
+# Read in annotation text file, left join to subset genotype file & subset to non-synomynous
+annotation <- read_table("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/PK_consensus_filtered_annotation.txt", skip = 82) %>%
+  rename(Variation = `#Uploaded_variation`) %>%
+  separate(Variation, sep = "_", c("ordered", "PKNH", "CHROM", "v2", "POS", "Variant")) %>%
+  select(-c(ordered, PKNH, v2, Allele, Location, Variant, Feature, Feature_type, cDNA_position, CDS_position, Codons, Existing_variation)) %>%
+  mutate(POS = as.numeric(POS))
+
+# Left join annotation & genotype file & filter out synomynous variants 
+# Left join annotation & genotype file & filter out synomynous variants 
+annotated_orthologue_genes <- orthologue_genes %>%
+  left_join(annotation) %>%
+  filter(!grepl("synonymous_variant", Consequence)) %>%
+  filter(!grepl("downstream_gene_variant", Consequence)) %>%
+  filter(!grepl("upstream_gene_variant", Consequence)) %>%
+  filter(!grepl("intron_variant", Consequence)) %>%
+  filter(!grepl("stop_retained_variant", Consequence))
+
+# Export Pk variants
+annotated_orthologue_genes %>% 
+  mutate(CHROM = as.numeric(CHROM)) %>%
+  arrange(CHROM, POS) %>%
+  select(1:2, 188:ncol(.)) %>%
+  write_tsv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance/orthologues_in_Pk.tsv") 
+
+
+# plot
+
+Metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>% 
+      select(1) %>%
+      add_column(Location = "Sabah") %>%
+      rename(Sample = sampleid) %>%
+      add_column(Cluster = "Sabah") %>% 
+      rbind(
+        read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(Location = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) 
+      ) %>%
+      rbind(
+        read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        add_column(Cluster = "Peninsular") 
+      ) %>%
+    mutate(Location = str_replace(Location, " ", "_")) %>%
+    mutate(Cluster = ifelse(grepl("REDACTED", Sample) | # does the ID match any of these
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) |
+                                grepl("REDACTED", Sample) |  
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample), "Mn", .$Cluster)) %>% # if not, just use values from Cluster
+    mutate(Cluster = ifelse(Cluster == "Sabah", "Mf", .$Cluster))
+
+SNP_Frequency <- annotated_orthologue_genes %>%
+  pivot_longer(3:187, names_to = "Sample", values_to = "Allele")  %>%
+  mutate(Sample = str_remove(Sample, "_DK.*")) %>%
+  #filter(grepl("PK", Sample)) %>%
+  left_join(Metadata) %>%
+  filter(Allele != -1) %>% # filter out samples with missing calles
+  group_by(Cluster, CHROM, POS) %>%
+  summarise(SNP_freq = sum(Allele >= 1)/n()*100) %>%
+  na.omit()
+
+SNP_Frequency_plot <- SNP_Frequency %>%
+  filter(CHROM == "01") %>%
+  ggplot(aes(x = POS, y = SNP_freq, colour = Cluster)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = POS), colour = "grey") +
+  scale_color_manual(values = c("#440154FF", "#39568CFF", "#1F968BFF")) +
+  ylab("SNP Frequency") +
+  xlab("Chromosome Postion")
+
+ggsave("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance/SNP_Frequency_plot_01.png", dpi = 600, width = 12, SNP_Frequency_plot)
+```
+
+## RSCB PDB 
+
+For variants that are "close calls" in AA position to their orhoglues in Pv/Pf, we searched for the area of the resulting protein structures using RSCB PDB.
+
+## Subset to orthologue genes and build trees
+
+IBS to be caclculated separately for each of the genes:
+
+ordered_PKNH_01_v2  381348  384824  Extract 
+ordered_PKNH_05_v2  445338  447218  Extract
+ordered_PKNH_08_v2  1408170 1411360 Extract 
+ordered_PKNH_10_v2  448974  453368  Extract
+ordered_PKNH_13_v2  2302686 2304038 Extract
+ordered_PKNH_14_v2  1308259 1310954 Extract
+ordered_PKNH_14_v2  2116423 2122473 Extract
+
+Firstly, you need to use plink to create a new plink dataset (cleaned), that can be passed into IBS plotting.
+So, you need to repeat the chunk below (or write a loop) for each of the genes described above, by substituing them in the drug_resistant_genes.txt file.
+
+```{bash,eval=F}
+plink --bcf PK_consensus_filtered_pass.bcf \
+  --keep-allele-order \
+  --vcf-idspace-to _ \
+  --double-id \
+  --allow-extra-chr 0 \
+  --make-bed \
+  --indiv-sort file sample_order.txt \
+  --extract 'range' drug_resistant_genes.txt \
+  --allow-no-sex \
+  --out Pk
+
+plink --bfile Pk --recode --out Pk
+plink --file Pk --maf 0.05 --geno 0.25 --mind 0.25 --make-bed --out cleaned
+
+plink --bfile cleaned \
+  --distance square \
+  --out drug_resistance/DR_14_2
+```
+
+```{bash,eval=F}
+cd /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance
+Rscript  /g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance/ordination_plots.R
+```
+
+```{R,eval=F}
+# Load packages
+library(tidyverse)
+library(ape)
+library(ggtree)
+
+# Neighbour-joining tree
+
+## Create distance matrix from PLINK data and build NJT
+NJT_ID <- read_table("DR_01.dist.id", col_names=F) %>%
+    as.data.frame() %>%
+    mutate_all(~str_remove(., "_DKD.*")) 
+
+NJT_matrix <- read_table("DR_01.dist", col_names=NJT_ID$X1) %>%
+    as.data.frame() %>%
+    add_column(Row_Names = NJT_ID$X1) %>%
+    column_to_rownames("Row_Names") %>%
+    as.matrix()
+
+NJT_tree <- nj(NJT_matrix)
+
+# Read in initial metadata
+NJT_metadata <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/Pk.csv", col_names = FALSE) %>% 
+        select(1, 6, 7) %>%
+        rename(Sample = X1) %>%
+        rename(Location = X6) %>%
+        rename(Cluster = X7) %>% 
+        as.data.frame() 
+
+NJT_metadata <- NJT_metadata %>% 
+    mutate(Cluster = ifelse(grepl("REDACTED", Sample) | # does the ID match any of these
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) |
+                                grepl("REDACTED", Sample) |  
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample) | 
+                                grepl("REDACTED", Sample), "Mn", .$Cluster)) %>% # if not, just use values from X7 - clusters and Sabah
+    mutate(Cluster = ifelse(Cluster == "Sabah", "Mf", .$Cluster)) %>% # if its the remaining Sabah samples, make them Mn, else keep them the same
+    mutate_all(~str_remove(., "_DKD.*")) 
+
+# Plot tree
+## options(ignore.negative.edge=TRUE)
+
+options(ignore.negative.edge=TRUE)
+
+# 01
+# Cluster 
+NJT_tree_plot <- ggtree(NJT_tree, layout="daylight", size = 0.5, aes(colour = Cluster)) %<+% NJT_metadata +
+    theme(legend.position = "right", 
+        legend.title = element_blank(), 
+        legend.key = element_blank()) +
+    scale_color_manual(values = c("#440154FF", "#39568CFF", "#1F968BFF"))
+    
+ggsave("NJT_unrooted_01.png", dpi = 600, height = 15, width = 15, limitsize = FALSE, NJT_tree_plot)
+
+#Labels
+NJT_tree_plot <- ggtree(NJT_tree, layout="daylight", size = 0.5, aes(colour = Cluster)) %<+% NJT_metadata +
+    theme(legend.position = "right", 
+    legend.title = element_blank(), 
+    legend.key = element_blank()) +
+    geom_tiplab(size = 2) +
+    scale_color_manual(values = c("#440154FF", "#39568CFF", "#1F968BFF"))
+
+ggsave("NJT_labelled_unrooted_01.png", dpi = 600, height = 20, width = 20, limitsize = FALSE, NJT_tree_plot)
+```
+
+## Align protein sequences of Pk against Pv orthologues 
+
+This was done with PlasmoDB. Then using data read in above, we can subset to variants of interest the obtain their SNP frequencies and hypothesise reasoning for their presence.
+
+```{R,eval=F}
+SNP_Frequency %>% 
+  filter(CHROM == "14" & (POS == 1309410 | POS == 2116751 | POS == 2118627 | POS == 2120614 | POS == 2121527 | POS == 2121528 | POS == 2121722 | POS == 2121725)) %>%
+  arrange(POS) %>%
+  write_tsv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/outputs/05_Analyses/drug_resistance/SNP_freq_for_variant_orthologues.tsv")
+```
+
+
+## 
+
+
+
+
+
+
+
+# Introgression 
+
+
+
+
+
+

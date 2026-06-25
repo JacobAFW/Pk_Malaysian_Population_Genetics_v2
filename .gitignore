@@ -1,0 +1,144 @@
+# .gitignore — scripts-only research repo (repo-scaffold).
+# Aggressive by design: data excluded by default. To publish ONE small synthetic
+# or already-public file, un-ignore it explicitly, e.g.:  !examples/toy.csv
+
+# === Research data & large/binary outputs — never commit ===
+data/
+raw/
+results/
+output/
+outputs/
+figures/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.rds
+*.RData
+*.rda
+
+# Genomics formats
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.bam
+*.sam
+*.cram
+*.bai
+*.crai
+*.vcf
+*.vcf.gz
+*.bcf
+*.bed
+*.bim
+*.fam
+*.ped
+*.gff
+*.gff3
+*.gtf
+*.fasta
+*.fa
+*.fna
+*.fai
+*.dict
+*.amb
+*.ann
+*.bwt
+*.pac
+*.sa
+*.csi
+*.tbi
+*.Q
+*.coords
+*.h5
+*.hdf5
+*.npy
+*.npz
+# spatial / shapefiles
+*.shp
+*.shx
+*.dbf
+*.prj
+
+# === Secrets / credentials ===
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+*.p12
+credentials
+.netrc
+.pgpass
+service-account*.json
+.aws/
+.ssh/
+
+# === Sample sheets / metadata (un-ignore deliberately if truly safe) ===
+*sample_sheet*
+*samplesheet*
+*manifest*
+*barcodes*
+*naming_indexes*
+
+# === Vendored environments / compiled binaries (project-specific) ===
+vvg-box-pixi/
+envs/
+*.tar.gz
+*.zip
+*.so
+*.o
+*.idx
+*.pack
+plink2
+admixture*
+hmmIBD
+
+# === Provenance / internal & unpublished material (project-specific) ===
+provenance/
+*.pdf
+MEMORY.md
+INSTRUCTIONS.md
+CONTEXT-*.md
+env/*.log
+env/CLAUDE_CODE_*.md
+env/ENV-PLAN.md
+
+# === R ===
+.Rproj.user/
+.Rhistory
+.Ruserdata
+renv/library/
+renv/local/
+renv/cellar/
+renv/staging/
+*_cache/
+*_files/
+
+# === Python ===
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+
+# === OS / editor / logs / fs junk ===
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+.here
+.claude/
+**/.fuse_hidden*
+
+# === Keep empty scaffolding dirs the scripts expect ===
+!results/.gitkeep
+!figures/.gitkeep
+!outputs/.gitkeep
+!data/
+!data/raw/.gitkeep
+!data/processed/.gitkeep

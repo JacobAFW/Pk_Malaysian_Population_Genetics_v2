@@ -1,0 +1,301 @@
+# Cluster specific filters for IBD and selection
+
+
+# Create files with list of samples to exclude for each cluster
+
+Done with ordination_plots.R
+
+# Filtering MAF by clusters
+
+ - genotype and sample missingness filters
+ - MAF 0.05 filters for the clusters independently
+    - 'Exclude' samples are generated in the fastLMM Rmd 
+ - merge outputs from MAF filters 
+ - run genotype missingness filter again - as some variants might not overlap because of the application to the MAF filters to the clusters
+
+```{R,eval=F}
+mkdir cluster_specific_maf_filters/high_quality_set
+
+plink --file Pk --geno 0.20 --make-bed --out cluster_specific_maf_filters/high_quality_set/cleaned
+plink --bfile cluster_specific_maf_filters/high_quality_set/cleaned --recode --out cluster_specific_maf_filters/high_quality_set/cleaned
+plink --file cluster_specific_maf_filters/high_quality_set/cleaned --mind 0.05 --make-bed --out cluster_specific_maf_filters/high_quality_set/cleaned
+plink --bfile cluster_specific_maf_filters/high_quality_set/cleaned --recode --out cluster_specific_maf_filters/high_quality_set/cleaned
+plink --file cluster_specific_maf_filters/high_quality_set/cleaned --geno 0.05 --make-bed --out cluster_specific_maf_filters/high_quality_set/cleaned
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mf.tsv --out cluster_specific_maf_filters/high_quality_set/Mf
+plink --file cluster_specific_maf_filters/high_quality_set/Mf --maf 0.05 --make-bed --out cluster_specific_maf_filters/high_quality_set/Mf
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mn.tsv --out cluster_specific_maf_filters/high_quality_set/Mn
+plink --file cluster_specific_maf_filters/high_quality_set/Mn --maf 0.05 --make-bed --out cluster_specific_maf_filters/high_quality_set/Mn
+
+plink --bfile cleaned --recode  --remove Exclude_for_Pen.tsv --out cluster_specific_maf_filters/high_quality_set/Pen
+plink --file cluster_specific_maf_filters/high_quality_set/Pen --maf 0.05 --make-bed --out cluster_specific_maf_filters/high_quality_set/Pen
+```
+
+# Wrangling data for IBD analysis 
+
+```{bash,eval=F}
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Mf.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Mf.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mf.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Mf_grep_patterns.tsv
+
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Mn.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Mn.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mn.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Mn_grep_patterns.tsv
+
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Pen.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Pen.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Pen.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Pen_grep_patterns.tsv
+
+rm -f exclude_tmp1.txt exclude_tmp2.txt cluster_specific_maf_filters/high_quality_set/*tmp*
+
+```
+
+# Create genotype file for each
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD/genotype_clusters.R
+
+```{r,eval=F}
+# Packages
+library(dplyr)
+library(readr)
+library(stringr)
+library(data.table)
+
+# Read in and wrangle VCF
+
+create_IBD_genotype <- function(FILE_PATH){
+    read_tsv(FILE_PATH, col_names = c("CHROM", "POS")) %>%
+        mutate(POS = as.numeric(POS)) %>%
+        left_join(
+                read_table("hmmIBD/Consensus_SNPs_subset_no_MOI.vcf", skip = 72) %>%
+                rename("CHROM" = `#CHROM`) %>% # this first section selects only variants that passed the PLINK filters we applied
+                mutate(POS = as.numeric(POS)) 
+        ) %>%
+        mutate(CHROM = str_remove(CHROM, "ordered_PKNH_"),
+        CHROM = str_remove(CHROM, "_v2")) %>%
+        mutate_at(c(10:ncol(.)), ~str_remove(., ":.*")) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "1/1" | . %like% "1/0" | . %like% "0/1" , "1", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "2/2" | . %like% "2/0" | . %like% "0/2" , "2", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "3/3" | . %like% "3/0" | . %like% "0/3" , "3", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "4/4" | . %like% "4/0" | . %like% "0/4" , "4", .)) %>% 
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "0/0" , "0", .)) %>% # 0 for reference allele
+        mutate_at(c(10:ncol(.)), ~ifelse(. %like% "./." , "-1", .)) %>% # for missing 
+        select(-c(3:9)) %>%
+        arrange(CHROM, POS) %>%
+        write_tsv(paste0(str_replace(FILE_PATH, "_grep_patterns.tsv", "_hmmIBD.tsv")))
+}
+
+list_of_files <- list.files(path = "cluster_specific_maf_filters/high_quality_set", pattern = "patterns.tsv", full.names = TRUE) 
+
+for (i in list_of_files){
+    create_IBD_genotype(paste0(i))
+}
+```
+
+# Run hmmIBD
+
+```{R,eval=F}
+hmmIBD -i hmmIBD/cluster_spec/Mf_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Mf.txt -o hmmIBD/cluster_spec/Mf
+hmmIBD -i hmmIBD/cluster_spec/Mn_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Mn.txt -o hmmIBD/cluster_spec/Mn
+hmmIBD -i hmmIBD/cluster_spec/Pen_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Pen.txt -o hmmIBD/cluster_spec/Pen
+```
+
+
+# Selection
+
+
+
+# Variant selection - [rehh](https://cran.r-project.org/web/packages/rehh/vignettes/rehh.html#LoadData)
+
+Use clonal_dups.txt to filter out clonal samples - messes with alogrithm.
+
+
+Since the whole file is read in for rehh, even though you can only look at a single chr at a time, it is advisable to split large data sets into chromosome-specific files.
+In addition, computing Rsb requires two data frames containing each the inES statistics of one population as obtained by the scan_hh() function - THUS - need to create separate VCF files for the different clusters that we want to compare.
+
+Steps:
+    - filter VCF using high quality GWAS type set of variants produced through plink (high_quality_set)
+    - remove samples not in high quality set, dups_from_naming_error.txt, lab_isolates.txt, clonal_dups.txt
+    - covert missing data to reference - otherwise they're filtered out by rehh
+    - create a lsit of the chromosomes
+    - get a list of samples to be included (-S) in the rehh analysis (Mn of Mf)
+    - subset VCF into a VCF for individual chromosomes
+    - subset to clusters
+
+**Need to ammend the sn and xl line manually based on outputs of "cat"**
+
+
+Pulling exclude samples from above and adding to clonal duplicates
+
+
+```{bash}
+mkdir selection/cluster_spec/Mf
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mf.bim | sed 's/:/\t/g' | awk '{print $1 "\t" $2}' > selection/cluster_spec/Mf/snp_filter.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_for_Mf.txt clonal_dups.txt > selection/cluster_spec/Mf/exclude.txt
+bcftools view --force-samples -R selection/cluster_spec/Mf/snp_filter.txt -S ^selection/cluster_spec/Mf/exclude.txt Consensus_SNPs_subset_no_MOI.vcf.gz | bcftools +missing2ref -o selection/cluster_spec/Mf/selection.vcf.gz
+bcftools index selection/cluster_spec/Mf/selection.vcf.gz
+bcftools view selection/cluster_spec/Mf/selection.vcf.gz | grep '##contig=<ID=ordered' | sed 's/##contig=<ID=//g' | sed 's/,.*//g' > selection/cluster_spec/chromosome.txt
+
+for i in $(cat selection/cluster_spec/chromosome.txt)
+    do 
+        bcftools view -r $i -o selection/cluster_spec/Mf/${i}.vcf.gz selection/cluster_spec/Mf/selection.vcf.gz
+    done 
+
+mkdir selection/cluster_spec/Mn
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mn.bim | sed 's/:/\t/g' | awk '{print $1 "\t" $2}' > selection/cluster_spec/Mn/snp_filter.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_for_Mn.txt clonal_dups.txt > selection/cluster_spec/Mn/exclude.txt
+bcftools view --force-samples -R selection/cluster_spec/Mn/snp_filter.txt -S ^selection/cluster_spec/Mn/exclude.txt Consensus_SNPs_subset_no_MOI.vcf.gz | bcftools +missing2ref -o selection/cluster_spec/Mn/selection.vcf.gz
+bcftools index selection/cluster_spec/Mn/selection.vcf.gz
+bcftools view selection/cluster_spec/Mn/selection.vcf.gz | grep '##contig=<ID=ordered' | sed 's/##contig=<ID=//g' | sed 's/,.*//g' > selection/cluster_spec/chromosome.txt
+
+for i in $(cat selection/cluster_spec/chromosome.txt)
+    do 
+        bcftools view -r $i -o selection/cluster_spec/Mn/${i}.vcf.gz selection/cluster_spec/Mn/selection.vcf.gz
+    done 
+
+mkdir selection/cluster_spec/Pen
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Pen.bim | sed 's/:/\t/g' | awk '{print $1 "\t" $2}' > selection/cluster_spec/Pen/snp_filter.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_for_Pen.txt clonal_dups.txt > selection/cluster_spec/Pen/exclude.txt
+bcftools view --force-samples -R selection/cluster_spec/Pen/snp_filter.txt -S ^selection/cluster_spec/Pen/exclude.txt Consensus_SNPs_subset_no_MOI.vcf.gz | bcftools +missing2ref -o selection/cluster_spec/Pen/selection.vcf.gz
+bcftools index selection/cluster_spec/Pen/selection.vcf.gz
+bcftools view selection/cluster_spec/Pen/selection.vcf.gz | grep '##contig=<ID=ordered' | sed 's/##contig=<ID=//g' | sed 's/,.*//g' > selection/cluster_spec/chromosome.txt
+
+for i in $(cat selection/cluster_spec/chromosome.txt)
+    do 
+        bcftools view -r $i -o selection/cluster_spec/Pen/${i}.vcf.gz selection/cluster_spec/Pen/selection.vcf.gz
+    done 
+```
+
+
+# Selection with rehh 
+
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/rehh.R
+
+
+```{r,eval=F}
+# Packages
+library(rehh)
+library(tidyverse)
+library(data.table)
+library(R.utils)
+
+# WHOLE GENOME iHS
+
+## need to read in chr files independently and build up an object resulting from the scan_hh outputs
+### first create an empty df to be appended in the loop and a list of chr names
+### the loop then creates the vcf file name (hap_file), and reads in the file to hh, which is then parsed into the scan_hh function to produce an object i that is appended to the growing wgscan object
+### the resulting wgscan produces the same results as the scan_hh object above
+### this can then be parsed into ihh2ihs
+
+chromsomes_files <- c("ordered_PKNH_01_v2", "ordered_PKNH_02_v2", "ordered_PKNH_03_v2", "ordered_PKNH_04_v2", "ordered_PKNH_05_v2",
+    "ordered_PKNH_06_v2", "ordered_PKNH_07_v2", "ordered_PKNH_08_v2", "ordered_PKNH_09_v2", "ordered_PKNH_10_v2", "ordered_PKNH_11_v2",
+    "ordered_PKNH_12_v2", "ordered_PKNH_13_v2", "ordered_PKNH_14_v2")
+
+wgscan <- tibble("CHR" = NA, "POSITION" = NA, "FREQ_A" = NA, "FREQ_D" = NA, "NHAPLO_A" = NA, "NHAPLO_D" = NA, "IHH_A" = NA, "IHH_D" = NA, "IES" = NA, "INES" = NA)
+
+for(i in chromsomes_files) {
+    # haplotype file name for each chromosome
+    hap_file = paste(i, ".vcf.gz", sep = "") # filename pattern
+    # create internal representation
+    hh <- data2haplohh(hap_file = hap_file, 
+                    chr.name = i, 
+                    polarize_vcf = FALSE, # if the AA key is absent
+                    min_perc_geno.mrk = 100, # discard markers genotyped on < 100% of haplotypes
+                    min_maf = 0.05, # discard markers with a minor allele frequency of < 0.05)
+                    vcf_reader = "data.table") # use this package
+    scan <- scan_hh(hh) # perform scan on a single chromosome (calculate iHH/iES values)
+    wgscan <- wgscan %>% # append the wgscan object every round with additional data
+    rbind(scan)
+}
+
+wgs_ihs <- wgscan %>%
+    na.omit() %>%
+    ihh2ihs(., min_maf = 0.05, # default
+            freqbin = 0.025 # default
+            )
+
+### Output is a list with two elements:
+### ihs: a data frame with iHS and corresponding p-value piHS (p-value in a −log10 scale assuming the iHS are normally distributed under the neutral hypothesis)
+### frequency.class: a data frame summarizing the derived allele frequency bins used for standardization and mean and standard deviation of the un-standardized values
+wgs_ihs$ihs
+wgs_ihs$frequency.class
+
+
+# Scan for candidate regions 
+## First update iHS table so that its compatible
+wgs_ihs_2 <- wgs_ihs
+wgs_ihs_2$ihs <- wgs_ihs_2$ihs %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    as.data.frame()
+
+candidate_regions <- calc_candidate_regions(wgs_ihs_2,
+                                 threshold = 4,
+                                 pval = TRUE,
+                                 window_size = 10000,
+                                 overlap = 1000,
+                                 min_n_extr_mrk = 3) %>%
+                                 add_column(Stat = "iHS") 
+
+## Save candidate regions for all stats
+candidate_regions %>%
+  write_tsv("candidate_regions_iHS.tsv")
+
+selection_plots <- function(DATA, MODEL){
+  plot_data <- DATA %>%
+    na.omit() %>%
+    mutate(CHR = str_remove(CHR, "ordered_PKNH_")) %>%
+    mutate(CHR = str_remove(CHR, "_v2")) %>%
+    mutate(CHR = as.numeric(CHR)) %>%
+    arrange(CHR, POSITION) %>%
+    mutate(POS = 1:nrow(.)) %>%
+    mutate(CHR = as.factor(CHR))
+
+  x_axis <- plot_data %>%
+    group_by(CHR) %>%
+    summarise(POS = median(POS)) %>%
+    mutate(CHR = str_remove(CHR, "^0"))
+
+  hline <- plot_data %>% 
+    summarise(enframe(quantile(!!sym(MODEL), c(0.001, 0.5, 0.999)), "quantile", MODEL))
+
+  selection_plot <- plot_data %>%
+    ggplot(aes(x = POS, y = !!sym(MODEL), colour = CHR)) +
+    geom_point() + 
+    theme(legend.position = "none") +
+    scale_colour_manual(values = c("#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF")) +
+    scale_x_continuous(breaks = x_axis$POS, labels = x_axis$CHR) +
+    xlab("Position") +
+    ylab(MODEL) +
+    geom_hline(yintercept = c(as.numeric(hline[1,2]), as.numeric(hline[3,2])), linetype="dotted")
+
+  ggsave(paste0(MODEL, ".png"), dpi = 300, width = 16, selection_plot)
+
+  selection_plot <- plot_data %>%
+      ggplot(aes(x = POS, y = LOGPVALUE, colour = CHR)) +
+      geom_jitter() + 
+      theme(legend.position = "none") +
+      scale_x_continuous(breaks = x_axis$POS, labels = x_axis$CHR) +
+      scale_colour_manual(values = c("#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF", "#39568CFF", "#29AF7FFF")) +
+      xlab("Chromosomes") +
+      ylab(expression(MODEL ~ ~-log[10](italic(p))))
+
+  ggsave(paste0(MODEL, "_pvalue.png"), dpi = 300, width = 16, selection_plot)
+}
+
+selection_plots(wgs_ihs$ihs, "IHS")
+```

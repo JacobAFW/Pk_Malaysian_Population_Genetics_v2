@@ -1,0 +1,104 @@
+# Cluster specific filters & full analysis
+
+
+# Create files with list of samples to exclude for each cluster
+
+Done with ordination_plots.R
+
+# Filtering MAF by clusters
+
+ - genotype and sample missingness filters
+ - MAF 0.05 filters for the clusters independently
+    - 'Exclude' samples are generated in the fastLMM Rmd 
+ - merge outputs from MAF filters 
+ - run genotype missingness filter again - as some variants might not overlap because of the application to the MAF filters to the clusters
+
+```{bash,eval=F}
+mkdir cluster_specific_maf_filters
+mkdir cluster_specific_maf_filters/Mf
+mkdir cluster_specific_maf_filters/Mn
+mkdir cluster_specific_maf_filters/Pen
+
+plink --bfile Pk --recode --out Pk
+plink --file Pk --geno 0.20 --make-bed --out cleaned
+plink --bfile cleaned --recode --out cleaned
+plink --file cleaned --mind 0.20 --make-bed --out cleaned
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mf.tsv --out cluster_specific_maf_filters/Mf
+plink --file cluster_specific_maf_filters/Mf --maf 0.05 --make-bed --out cluster_specific_maf_filters/Mf
+
+plink --bfile cleaned --recode  --remove Exclude_for_Mn.tsv --out cluster_specific_maf_filters/Mn
+plink --file cluster_specific_maf_filters/Mn --maf 0.05 --make-bed --out cluster_specific_maf_filters/Mn
+
+plink --bfile cleaned --recode  --remove Exclude_for_Pen.tsv --out cluster_specific_maf_filters/Pen
+plink --file cluster_specific_maf_filters/Pen --maf 0.05 --make-bed --out cluster_specific_maf_filters/Pen
+
+cd cluster_specific_maf_filters
+
+ls *bed | sed 's/.bed//g' > cleaned_cluster_files.txt
+
+plink --merge-list cleaned_cluster_files.txt -make-bed --out cleaned
+```
+
+```{R,eval=F}
+# Packages
+library(tidyverse)
+library(janitor)
+library(data.table)
+
+# Metadata
+metadata <- read_csv("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/full_dataset_011223.csv") %>%
+    rename(Sample = studycode) %>% 
+    add_column(Cluster = NA) %>% 
+    mutate(sevemal = ifelse(grepl("Um", sevemal), "Um", 
+        ifelse(sevemal == "1", "Sm",
+        ifelse(sevemal == "0", "Um", .$sevemal)))) %>%
+    mutate(Sample = str_to_upper(Sample)) %>% 
+    unique()
+
+original_metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/data/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>%
+    select(1:3) %>%
+    mutate(subjectid = ifelse(str_length(subjectid) == 1, paste0("00", subjectid), # if subjectid length = 1 paste 00
+        ifelse(str_length(subjectid) == 2, paste0("0", subjectid), # if not, then if subjectid length = 2 paste 0
+        .$subjectid))) %>%
+    unite(Sample, c("group", "subjectid"), sep ="") %>% 
+    rename(Sample2 = sampleid)
+
+metadata <- metadata %>%
+    left_join(original_metadata) %>%
+    mutate(Sample2 = ifelse(is.na(Sample2), Sample, Sample2)) %>%
+    select(-Sample) %>%
+    rename(Sample = Sample2) %>%
+    relocate(Sample)
+    
+    
+archived_data <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_metadata.csv") %>%
+        select(1, 3, 5) %>% 
+        rename(district = area) %>%
+        mutate(Cluster = str_remove(Group, "-Pk")) %>% 
+        select(-Group) %>% 
+        rbind(read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/data/metadata/Pk_clusters_peninsular_metadata.csv") %>%
+        select(2, 8) %>%
+        rename(Sample = ENA_accession_no_ES) %>%
+        rename(district = Location) %>%
+        add_column(Cluster = "Peninsular")
+        ) %>%
+        add_column(enroldate=NA, age = NA, sex=NA, ethnicity=NA, village=NA, occupation=NA, Hb=NA, platelets=NA,
+        parasitemia=NA, fever=NA, respiratory_rate=NA, oxygen_saturation=NA, systolic_BP=NA, diastolic_BP=NA, G6PD=NA,
+        pregnant=NA, creatinine=NA, study=NA, bicarbonate=NA, PCR=NA, sevemal=NA, bilirubin=NA, glucose=NA, bleeding_severity=NA)
+
+metadata <- metadata %>%
+    rbind(archived_data)
+
+Plink_fam <- read.table("clusters_combined_cleaned.fam", sep =" ") %>% 
+    mutate(Sample = str_remove(V1, "_DK.*")) %>% 
+    mutate(Sample = ifelse(!grepl("PK_SB_DNA", Sample), str_replace(Sample, "_", "-"), Sample)) %>% 
+    left_join(metadata) %>% 
+    select(-Sample) %>%
+    mutate(sevemal = ifelse(sevemal == "Sm", 1, 2)) %>%
+    select(1:5, sevemal) 
+
+
+write.table(Plink_fam, "clusters_combined_cleaned.fam", quote = FALSE, sep = " ", col.names = FALSE, row.names = FALSE)
+```
+

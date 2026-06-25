@@ -1,0 +1,61 @@
+#!/bin/bash
+#PBS -P pq84
+#PBS -q normalbw
+#PBS -N hmmIBD_clusters
+#PBS -j oe
+#PBS -m ae
+#PBS -l walltime=8:00:00,mem=80GB,ncpus=10
+#PBS -l storage=gdata/pq84+scratch/pq84
+#PBS -M jacob.westaway@menzies.edu.au
+
+echo "---------------------------------------"
+echo "PBS: Job identifier is $PBS_JOBID"
+echo "PBS: Job name is $PBS_JOBNAME"
+
+echo "---------------------------------------"
+echo "Define paths and load modules"
+module load bcftools/1.12
+module load R/4.1.0 
+export R_LIBS_USER="/g/data/pq84/R"
+export PATH=$PATH:/g/data/pq84/bin/hmmIBD/   
+cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/outputs/05_Analyses/Population_genetics
+
+echo "---------------------------------------"
+echo "Wrangling"
+
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Mf.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Mf.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mf.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Mf_grep_patterns.tsv
+
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Mn.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Mn.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Mn.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Mn_grep_patterns.tsv
+
+awk '{print $1}' cluster_specific_maf_filters/high_quality_set/Pen.fam > exclude_tmp1.txt
+bcftools view Consensus_SNPs_subset_no_MOI.vcf.gz | grep '#CHROM' | tr '\t' '\n' | sed -n '/ERR2214837/,$p' > exclude_tmp2.txt
+fgrep -v -f exclude_tmp1.txt exclude_tmp2.txt > cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt
+cat cluster_specific_maf_filters/high_quality_set/exclude_tmp3.txt dups_from_naming_error.txt lab_isolates.txt > cluster_specific_maf_filters/high_quality_set/exclude_for_Pen.txt
+
+awk '{print $2}' cluster_specific_maf_filters/high_quality_set/Pen.bim | sed 's/:/\t/g' | awk '{print $1"\t"$2}' | uniq -u > cluster_specific_maf_filters/high_quality_set/Pen_grep_patterns.tsv
+
+rm -f exclude_tmp1.txt exclude_tmp2.txt cluster_specific_maf_filters/high_quality_set/*tmp*
+
+echo "---------------------------------------"
+echo "Create genotype file"
+Rscript /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/scripts/05_Analyses/Population_genetics/hmmIBD/genotype_clusters.R
+
+
+echo "---------------------------------------"
+echo "Run hmmIBD"
+hmmIBD -i cluster_specific_maf_filters/high_quality_set/Mf_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Mf.txt -o hmmIBD/cluster_spec/Mf
+hmmIBD -i cluster_specific_maf_filters/high_quality_set/Mn_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Mn.txt -o hmmIBD/cluster_spec/Mn
+hmmIBD -i cluster_specific_maf_filters/high_quality_set/Pen_hmmIBD.tsv -b cluster_specific_maf_filters/high_quality_set/exclude_for_Pen.txt -o hmmIBD/cluster_spec/Pen
+
+echo "---------------------------------------"
+echo "FINISHED"

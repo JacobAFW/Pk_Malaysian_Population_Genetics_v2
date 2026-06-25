@@ -1,0 +1,862 @@
+---
+title: "Spatial-introgression_analyses"
+output: pdf_document
+date: "2023-09-11"
+---
+
+# Load libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("scripts/_setup.R"))
+# malariaAtlas >=1.6.0 dropped as.MAP*; shims preserve the original column shapes
+# (x,y,z for rasters; long,lat,name_* for shapes) so downstream code is unchanged.
+as.MAPraster <- function(r) {
+  df <- terra::as.data.frame(r, xy = TRUE, na.rm = TRUE)
+  stats::setNames(df, c("x", "y", "z"))
+}
+as.MAPshp <- function(s) {
+  s_sf <- suppressWarnings(sf::st_as_sf(s))
+  coords <- as.data.frame(sf::st_coordinates(s_sf))
+  feat_col <- tail(grep("^L", names(coords), value = TRUE), 1)
+  attrs <- as.data.frame(sf::st_drop_geometry(s_sf))
+  attrs$.id <- seq_len(nrow(attrs))
+  coords$.id <- coords[[feat_col]]
+  m <- merge(coords, attrs, by = ".id", sort = FALSE)
+  m <- m[order(m$.id), ]
+  out <- cbind(long = m$X, lat = m$Y, m[, setdiff(names(m), c("X","Y",grep("^L",names(m),value=TRUE),".id")), drop = FALSE])
+  rownames(out) <- NULL
+  out
+}
+library(tidyverse)
+library(here)
+library(janitor)
+library(gridExtra)
+library(malariaAtlas)
+library(sp)
+library(readxl)
+library(MASS)
+library(spdep)
+library(eSDM)
+library(car)
+library(terra)
+library(rnaturalearth)
+```
+
+# Description 
+This Rmd describes four separate analyses that explore the relationship between spatial factors and introgression events in Plasmodium Knowles:
+ - Degree of introgression & anoph density
+ - Degree of introgression & landscape metrics 
+ - Presence/absence of introgressed window & anoph density 
+ - Presence/absence of introgressed window & landscape metrics
+
+
+# Anopheles density analysis
+
+# Degree of introgression & anoph density
+
+## Import, export & wrangle data
+
+### Download & wrangle anopheles data from malaria atlas - get district-level anopheles density 
+
+```{r,warning=F,message=F}
+# What rasters are available (malariaAtlas 1.6.0+: listData defunct, use listRaster)
+listRaster()
+
+# Get data
+malaysia_shp <- getShp(country = "Malaysia", admin_level = c("admin0", "admin1", "admin2"))
+anoph_raster <- getRaster(dataset_id = "Explorer__2016_Anopheles_leucosphyrus_complex", shp = malaysia_shp) # only available for 2016
+anoph_raster <- getRaster(dataset_id = "Explorer__2016_Anopheles_leucosphyrus_complex") # needed to pull out data
+
+# Convert to df
+anoph_raster_df <- as.MAPraster(anoph_raster) %>% 
+  unclass %>% 
+  as.data.frame() 
+
+malaysia_shp_df <- as.MAPshp(malaysia_shp) %>% 
+  unclass %>% 
+  as.data.frame() 
+
+# Identify what districts (shape data) the predictions (raster file) appear in
+district_contour <- malaysia_shp_df %>% 
+  filter(name_2 == "Betong") %>%
+  dplyr::select(long, lat, name_1, name_2)
+
+district_subset <- point.in.polygon(pol.x = district_contour$long, pol.y = district_contour$lat, 
+                 point.x = anoph_raster_df$x, point.y = anoph_raster_df$y) %>%
+  as.data.frame() %>%
+  rename(Betong = ".") %>% 
+  cbind(anoph_raster_df) %>% 
+  filter(Betong == 1)
+
+# Create function to loop over districts
+what_district <- function(DISTRICT){
+  district_contour <- malaysia_shp_df %>% 
+    filter(name_2 == DISTRICT) %>%
+    dplyr::select(long, lat, name_1, name_2)
+
+  district_subset <- point.in.polygon(pol.x = district_contour$long, pol.y = district_contour$lat, 
+                  point.x = anoph_raster_df$x, point.y = anoph_raster_df$y) %>%
+    as.data.frame() %>%
+    rename(District = ".") %>% 
+    mutate(District = ifelse(District == 1, DISTRICT, .$District)) %>%
+    cbind(anoph_raster_df) %>% 
+    filter(District == DISTRICT)
+  
+  return(district_subset)
+}
+
+# Get district names
+district_names <- malaysia_shp_df %>% 
+  dplyr::select(name_2) %>% 
+  na.omit() %>% 
+  unique() %>% 
+  mutate(name_2 = as.factor(name_2))
+
+# Create empty df using raster data (same shape as input data)
+district_level_vector_data <- anoph_raster_df %>% 
+  add_column(District = 0) %>% 
+  slice(-(1:nrow(.)))
+
+# Loop into df
+for(i in levels(district_names$name_2)){
+    district_level_vector_data <- district_level_vector_data %>%
+        rbind(what_district(paste0(i)))
+}    
+
+district_level_vector_data_summary <- district_level_vector_data %>% 
+  group_by(District) %>% 
+  summarise(mean = mean(z), median = median(z), min = min(z), max = max(z)) 
+
+#write_tsv(district_level_vector_data_summary, "/Users/jacobwestaway/Desktop/Menzies/Knowlesi/Pipeline/Pk_Pipeline/data/MSC/district_level_vector_data.tsv")
+district_level_vector_data %>% 
+  dplyr::select(x, y)  
+  #write_csv("/Users/jacobwestaway/Desktop/Menzies/Knowlesi/Pipeline/Pk_Pipeline/data/MSC/district_level_vector_data_coords.csv")
+```
+
+
+### Get GPS coords for all samples
+
+```{r,warning=F,message=F}
+#sample_coords <- read_xlsx("data/raw/metadata/PK_Sabah_Sample_naming_indexes.xlsx") %>% 
+#  dplyr::select(sampleid, group, subjectid) %>%
+#  mutate(subjectid = ifelse(str_length(subjectid) == 1, paste0("00", subjectid), # if subjectid length = 1 paste 00
+#                     ifelse(str_length(subjectid) == 2, paste0("0", subjectid), # if not, then if subjectid length = 2 paste 0
+#                     .$subjectid))) %>% # if not, keep value the same
+#    mutate(studycode = paste0(group, subjectid)) %>%
+#  left_join(
+#      read_xlsx("data/raw/metadata/full_datasets/A_CC_master_19.6.16.xlsx") %>%
+#        select(code, x_gpsbackup, y_gpsbackup) %>%
+#        rename(studycode = code)
+#  ) %>% 
+#  filter(!is.na(x_gpsbackup)) %>%
+#    arrange(sampleid)
+
+# Updated coords from Matt
+
+sample_coords <- read_csv("data/raw/MSC/spatial/pk_sample_coords_updated.csv") %>% 
+  mutate(x_gpsbackup = ifelse(is.na(x_gpsbackup), .$x_long_final, .$x_gpsbackup)) %>% 
+  mutate(y_gpsbackup = ifelse(is.na(y_gpsbackup), .$y_lat_final, .$y_gpsbackup)) %>% 
+  dplyr::select(sampleid, code, x_gpsbackup, y_gpsbackup) %>% 
+  rename(studycode = code) %>% 
+  na.omit()
+```
+
+
+### Subset anopheles data
+
+#### create 5x5 matrices around points
+#### Conversion for distance in km to long/lat
+one degree of long/lat = 111km
+one degree divided / 111km * 2.5km
+1/111*2.5=0.0225  
+
+```{r,warning=F,message=F}
+# Calculate upper and lower range
+sample_coords_limits <- sample_coords %>% 
+  rename(x_gps = x_gpsbackup, y_gps = y_gpsbackup) %>%
+  mutate(x_gps_upper = x_gps + 0.02252) %>% 
+  mutate(x_gps_lower = x_gps - 0.02252) %>% 
+  mutate(y_gps_upper = y_gps + 0.02252) %>% 
+  mutate(y_gps_lower = y_gps - 0.02252) %>% 
+  dplyr::select(1, 5:ncol(.)) %>% 
+  mutate_if(is.character, as.factor)
+```
+
+
+### Combine anopheles and introgression data
+
+#### Create function and nest in loop to get anoph data for each sample
+
+```{r,warning=F,message=F}
+get_anoph_data <- function(SAMPLE){
+  
+  sample_coords_temp <- sample_coords_limits %>% 
+    filter(sampleid == SAMPLE)
+  
+  anoph_raster_df %>%
+    filter(x > sample_coords_temp$x_gps_lower & x < sample_coords_temp$x_gps_upper) %>% 
+    filter(y > sample_coords_temp$y_gps_lower & y < sample_coords_temp$y_gps_upper) %>%
+    add_column(sampleid = SAMPLE)
+}
+
+# Create empty df to store outputs 
+anoph_sample_data <- anoph_raster_df %>% 
+  add_column(sampleid = 0) %>% 
+  dplyr::slice(-(1:nrow(.)))
+
+# Loop into df
+for(i in levels(sample_coords_limits$sampleid)){
+    anoph_sample_data <- anoph_sample_data %>%
+        rbind(get_anoph_data(paste0(i)))
+}    
+```
+
+#### Join data
+
+```{r,warning=F,message=F}
+# Read in data
+anoph_degree_of_intro <- anoph_sample_data %>% 
+  dplyr::select(sampleid, z) %>% 
+  group_by(sampleid) %>% 
+  summarise(anoph_density = mean(z)) %>%
+  left_join(
+    read_tsv("data/raw/MSC/spatial/intro_per_sample_summary.tsv") %>%
+      rename(sampleid = SAMPLE) %>% 
+      mutate(sampleid = str_remove(sampleid, "_DK.*"))
+  ) %>% 
+  na.omit() %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate(intro_level = fct_relevel(intro_level, c("Low","Medium","High")))
+```
+
+
+### Check for spatial-autocorrelation 
+
+Adapted from: https://rspatial.org/analysis/3-spauto.html & https://mgimond.github.io/Spatial/spatial-autocorrelation-in-r.html 
+
+```{r,warning=F,message=F}
+# For continuous dependent
+
+## Method 1
+## Convert points to polygon
+polygon_data <- anoph_degree_of_intro %>% 
+  left_join(sample_coords) %>% 
+  dplyr::select(x_gpsbackup, y_gpsbackup, sampleid, intro_level, n) %>% 
+  pts2poly_centroids(0.0225, crs = 4326, agr = "constant") %>% # create polygons based on the 2.5km radius 
+  vect() # convert to SpatVector object
+
+## Check for intersecting polygons
+plot(polygon_data)
+
+## Compute Moran's I and do significance test
+## Create spatial weights matrix
+spatial_weights <- terra::adjacent(polygon_data, "intersect", pairs = FALSE) # intersects excludes intersecting polygons
+
+## Calculate autocorrelation
+ac_value <- autocor(polygon_data$n, spatial_weights, "moran") # continuous
+
+## Test significance
+mc_sim <- sapply(1:99, function(i) {
+    autocor(sample(polygon_data$n), spatial_weights, "moran")
+})
+
+# Check simulated distribution of expected values against observed Moran's I - does the the observed value align with the distribution, which one would expect if the values were not spatially auto-correlated 
+hist(mc_sim)
+abline(v=ac_value, col="red")
+sum(mc_sim >= ac_value) / 100
+
+## Method 2
+## Using spdep function 
+polygon_data <- anoph_degree_of_intro %>% 
+  left_join(sample_coords) %>% 
+  dplyr::select(x_gpsbackup, y_gpsbackup, sampleid, intro_level, n) %>% 
+  pts2poly_centroids(0.0225, crs = 4326, agr = "constant") 
+
+set.ZeroPolicyOption(TRUE) # needed for zero.policy argument - we have 0 values because some locations have no contiguity
+spatial_weights <- poly2nb(polygon_data, snap = 0.0225) %>% # snap value based on size of polygon/radius
+    nb2listw(style="W", zero.policy = TRUE)
+
+moran.test(polygon_data$n, spatial_weights)
+moran.mc(polygon_data$n, spatial_weights, nsim = 999)
+
+# Categorical dependent - using data produced above
+joincount.test(polygon_data$intro_level, spatial_weights)
+joincount.mc(polygon_data$intro_level, spatial_weights, nsim = 999, zero.policy = TRUE)
+
+# p > 0.05 - accept the null - values randomly distributed in study area
+```
+
+
+
+### Check for relationships between Cluster and env variables, and introgression
+
+
+#### Cluster and degree of introgression
+
+```{r}
+## Linear
+glm(n ~ Cluster, data = anoph_degree_of_intro) %>% summary()
+
+## Binomial
+glm(intro_level ~ Cluster, data = anoph_degree_of_intro, family = binomial()) %>% 
+  summary()
+
+##  Ordinal
+coef_table <- polr(intro_level ~ Cluster, data = anoph_degree_of_intro, Hess = TRUE)  %>%
+  summary() %>%
+  coef
+
+p_value <- pnorm(abs(coef_table[, "t value"]), lower.tail = FALSE) * 2
+cbind(coef_table, "p_value" = p_value)
+```
+
+
+#### Cluster and anoph density
+
+```{r}
+## Linear
+glm(anoph_density ~ Cluster, data = anoph_degree_of_intro) %>% 
+  summary()
+
+glm(anoph_density ~ Cluster, data = anoph_degree_of_intro, family="Gamma") %>% 
+  summary()
+```
+
+# Analyses
+## Mixed effects regression models - effect of anoph density on degree of introgression 
+
+```{r,warning=F,message=F}
+# Logistic Regression - ordered - https://stats.oarc.ucla.edu/r/dae/ordinal-logistic-regression/
+landscape_model <- polr(intro_level ~ anoph_density, data = anoph_degree_of_intro, Hess = TRUE) 
+landscape_model_2 <- polr(intro_level ~ anoph_density * Cluster, data = anoph_degree_of_intro, Hess = TRUE) 
+landscape_model_3 <- polr(intro_level ~ anoph_density + Cluster, data = anoph_degree_of_intro, Hess = TRUE) 
+
+
+summary(landscape_model) 
+summary(landscape_model_2) # model 2 is best fit but NOT significant
+summary(landscape_model_3)
+
+coef_table <- polr(intro_level ~ anoph_density * Cluster, data = anoph_degree_of_intro, Hess = TRUE) %>%
+  summary() %>%
+  coef()
+
+confint.default(landscape_model_2) # significant association for interaction - anoph in Mn relative to Mf, but the same size is too small
+
+p_value <- pnorm(abs(coef_table[, "t value"]), lower.tail = FALSE) * 2
+cbind(coef_table, "p_value" = p_value)
+
+anoph_degree_of_intro %>% 
+  filter(Cluster == "Mn") %>%
+  group_by(intro_level) %>%
+  summarise(n()) # showing small sample size
+```
+
+
+###########################################################################################################################################################################
+
+## Get major windows data and combine with anoph data - for downstream analysis
+
+```{r,warning=F,message=F}
+major_windows <- read_tsv("data/raw/MSC/spatial/Mf_major_windows_Sabah_samples.tsv") %>% 
+  add_column(Cluster = "Mf") %>% 
+  rbind(
+    read_tsv("data/raw/MSC/spatial/Mf_major_windows_Sarawak_samples.tsv") %>%
+      add_column(Cluster = "Mf") 
+    ) %>%
+  rbind(
+    read_tsv("data/raw/MSC/spatial/Mn_major_windows_Sabah_samples.tsv") %>%
+    add_column(Cluster = "Mn")
+  ) %>% 
+  rbind(
+    read_tsv("data/raw/MSC/spatial/Mn_major_windows_Sarawak_samples.tsv") %>%
+    add_column(Cluster = "Mn")
+  ) %>%
+  dplyr::select(WINDOW, Cluster) %>%
+  unique()
+
+anoph_sample_data <- anoph_sample_data %>% 
+  dplyr::select(sampleid, z) %>% 
+  group_by(sampleid) %>% 
+  summarise(anoph_density = mean(z)) 
+
+anoph_major_windows_summary <- read_tsv("data/raw/MSC/spatial/introgressed_windows_filtered.tsv") %>% 
+  #filter(WINDOW %in% major_windows$WINDOW & Cluster %in% major_windows$Cluster) %>% 
+  dplyr::select(SAMPLE, WINDOW, Cluster) %>% 
+  rename(sampleid = SAMPLE) %>% 
+  mutate(sampleid = str_remove(sampleid, "_DK.*")) %>% 
+  filter(sampleid %in% anoph_sample_data$sampleid) %>%
+  add_column(Introgression = "Yes") %>%
+  pivot_wider(names_from = WINDOW, values_from = Introgression) %>%
+  mutate_all(funs(replace_na(., "No"))) %>% 
+  pivot_longer(3:ncol(.), names_to = "Window", values_to = "Introgression") %>% 
+  filter(Window %in% major_windows$WINDOW & Cluster %in% major_windows$Cluster) %>% 
+  pivot_wider(names_from = Window, values_from = Introgression) %>% 
+  left_join(
+    anoph_sample_data
+  ) %>% 
+  rename_at(vars(3:24), funs(paste0("Window_", .))) %>%
+  mutate_if(is.character, as.factor)
+
+column_names <- anoph_major_windows_summary %>% 
+  select_at(vars(contains("Window"))) %>%
+  colnames() %>% 
+  as.data.frame() %>% 
+  rename(Window = ".")
+```
+
+
+###########################################################################################################################################################################
+
+
+
+# Landscape analysis
+
+# Degree of introgression & landscape metrics
+
+## Wrangle sample_coords data to make it appropriate fromat for [CSIRO app](https://shiny.csiro.au/landscape-metrics/) data download
+
+```{r,warning=F,message=F}
+sample_coords %>% 
+  dplyr::select(sampleid,x_gpsbackup, y_gpsbackup) %>% 
+  rename(site_id = sampleid, location_x = x_gpsbackup, location_y = y_gpsbackup) 
+  #write_csv("data/raw/MSC/spatial/sample_gps_coords.csv")
+```
+
+## Read in data
+
+```{r,warning=F,message=F}
+landscape_sample_data <- read_csv("data/raw/MSC/spatial/Class_metrics_samples.csv") %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(sampleid = plot_id) %>%
+  left_join(anoph_degree_of_intro) %>%
+  left_join(anoph_major_windows_summary) 
+```
+
+### Check for relationships between Cluster and env variables
+
+#### Cluster and landscape
+
+```{r}
+# Perimeter:area ratio
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "para_mn" & class_name == "Trees" & !is.na(n))
+
+## Linear
+glm(value ~ Cluster, data = landscape_sample_data_analysis) %>% 
+  summary()
+
+glm(value ~ Cluster, data = landscape_sample_data_analysis, family="Gamma") %>% 
+  summary()
+
+# Landscape Percentage
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "pland" & class_name == "Trees" & !is.na(n))
+
+glm(value ~ Cluster, data = landscape_sample_data_analysis) %>% 
+  summary()
+
+glm(value ~ Cluster, data = landscape_sample_data_analysis, family="Gamma") %>% 
+  summary()
+```
+
+
+## Mixed effects regression models - effect of landscape proportions on degree of introgression 
+
+```{r,warning=F,message=F}
+# Perimeter:area ratio
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "para_mn" & class_name == "Trees" & !is.na(n))
+
+## Logistic Regression - ordered - https://stats.oarc.ucla.edu/r/dae/ordinal-logistic-regression/
+library(MASS)
+
+landscape_model <- polr(intro_level ~ value, data = landscape_sample_data_analysis, Hess = TRUE) 
+landscape_model_2 <- polr(intro_level ~ value * Cluster, data = landscape_sample_data_analysis, Hess = TRUE) 
+landscape_model_3 <- polr(intro_level ~ value + Cluster, data = landscape_sample_data_analysis, Hess = TRUE) 
+
+summary(landscape_model) 
+summary(landscape_model_2) 
+summary(landscape_model_3) # model 3 is best fit
+
+confint.default(landscape_model_2) # p-a ratio has no significant association with degree of intro
+
+coef_table <- polr(intro_level ~ value + Cluster, data = landscape_sample_data_analysis, Hess = TRUE) %>%
+  summary() %>%
+  coef()
+
+p_value <- pnorm(abs(coef_table[, "t value"]), lower.tail = FALSE) * 2
+cbind(coef_table, "p_value" = p_value) # further validation
+###################################################################################################
+
+# Landscape Percentage
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "pland" & class_name == "Trees" & !is.na(n))
+
+## Logistic Regression - ordered - https://stats.oarc.ucla.edu/r/dae/ordinal-logistic-regression/
+landscape_model <- polr(intro_level ~ value, data = landscape_sample_data_analysis, Hess = TRUE) 
+landscape_model_2 <- polr(intro_level ~ value * Cluster, data = landscape_sample_data_analysis, Hess = TRUE) 
+landscape_model_3 <- polr(intro_level ~ value + Cluster, data = landscape_sample_data_analysis, Hess = TRUE) 
+
+summary(landscape_model) 
+summary(landscape_model_2) 
+summary(landscape_model_3) # model 3 is best fit
+
+confint.default(landscape_model_2) # p-a ratio has no significant association with degree of intro
+
+coef_table <- polr(intro_level ~ value + Cluster, data = landscape_sample_data_analysis, Hess = TRUE) %>%
+  summary() %>%
+  coef()
+
+p_value <- pnorm(abs(coef_table[, "t value"]), lower.tail = FALSE) * 2
+cbind(coef_table, "p_value" = p_value) # further validation
+```
+
+
+
+###########################################################################################################################################################################
+
+
+
+# Presence/absence of introgressed window & landscape metrics
+
+## Mixed effects regression models - effect of proportions of landscape on presence/absence of windows
+
+```{r}
+library(MuMIn)
+# Perimeter:area ratio
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "para_mn" & class_name == "Trees" & !is.na(n))
+
+log_reg_output <- tibble("Estimate" = NA, "Std. Error" = NA, "z value" = NA, "Pr(>|z|)" = NA, "Window" = NA, "Variable" = NA)
+
+for(i in levels(column_names$windows)){
+  log_reg_output <- log_reg_output %>% 
+    rbind(
+      glm(get(i) ~ value * Cluster, data = landscape_sample_data_analysis, family = "binomial") %>%
+        summary() %>%
+        coef() %>%
+        as.data.frame() %>%
+        rownames_to_column(var = "Variable") %>%
+        add_column(Window = paste0(i))
+    )
+  }
+
+pa_ratio_windows <- log_reg_output %>% 
+  na.omit() %>%
+  rename(P = "Pr(>|z|)") %>%
+  arrange(P) %>%
+  filter(Variable == "value")
+
+# Subset to significant (or close to) windows to reassess
+landscape_model <- glm(Window_859 ~ value * Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_2 <- glm(Window_859 ~ value, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_3 <- glm(Window_859 ~ value + Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+
+summary(landscape_model) 
+summary(landscape_model_2) # model 2 is best fit but NOT significant
+summary(landscape_model_3)
+
+r.squaredGLMM(landscape_model) 
+r.squaredGLMM(landscape_model_2) # doesn't explain much variation
+r.squaredGLMM(landscape_model_3)
+
+car::Anova(landscape_model_2) %>%
+  as.data.frame(row.names = NULL)
+
+landscape_sample_data_analysis %>% 
+  ggplot(aes(x = Window_859, y = value)) + 
+  geom_boxplot()
+```
+
+**Window_859 - positively associated with p-a ratio - explaining 70% of variation**
+
+
+```{r}
+## Landscape percentage
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "pland" & class_name == "Trees" & !is.na(n))
+
+log_reg_output <- tibble("Estimate" = NA, "Std. Error" = NA, "z value" = NA, "Pr(>|z|)" = NA, "Window" = NA, "Variable" = NA)
+
+for(i in levels(column_names$windows)){
+  log_reg_output <- log_reg_output %>% 
+    rbind(
+      glm(get(i) ~ value * Cluster, data = landscape_sample_data_analysis, family = "binomial") %>%
+        summary() %>%
+        coef() %>%
+        as.data.frame() %>%
+        rownames_to_column(var = "Variable") %>%
+        add_column(Window = paste0(i))
+    )
+  }
+
+landscape_windows <- log_reg_output %>% 
+  na.omit() %>%
+  rename(P = "Pr(>|z|)") %>%
+  arrange(P) %>%
+  filter(Variable == "value")
+
+# Subset to significant windows to reassess
+landscape_model <- glm(Window_1196 ~ value * Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_2 <- glm(Window_1196 ~ value, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_3 <- glm(Window_1196 ~ value + Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+
+summary(landscape_model) 
+summary(landscape_model_2) # model 1 is best fit but NOT significant
+summary(landscape_model_3)
+
+r.squaredGLMM(landscape_model) 
+r.squaredGLMM(landscape_model_2) # doesn't explain much variation
+r.squaredGLMM(landscape_model_3)
+
+car::Anova(landscape_model_2) %>%
+  as.data.frame(row.names = NULL)
+
+landscape_sample_data_analysis %>% 
+  ggplot(aes(x = Window_1196, y = anoph_density)) + 
+  geom_boxplot()
+```
+
+**Close to significant for Window_1196 - but not quite - positive association with - only 20% of variation**
+
+
+
+###########################################################################################################################################################################
+
+
+
+# Presence/absence of introgressed window & anoph density 
+
+## Mixed effects regression models - effect of anoph density on presence/absence of windows
+
+```{r}
+## Anoph density
+log_reg_output <- tibble("Estimate" = NA, "Std. Error" = NA, "z value" = NA, "Pr(>|z|)" = NA, "Window" = NA, "Variable" = NA)
+
+for(i in levels(column_names$windows)){
+  log_reg_output <- log_reg_output %>% 
+    rbind(
+      glm(get(i) ~ anoph_density * Cluster, data = landscape_sample_data_analysis, family = "binomial") %>%
+        summary() %>%
+        coef() %>%
+        as.data.frame() %>%
+        rownames_to_column(var = "Variable") %>%
+        add_column(Window = paste0(i))
+    )
+  }
+
+anoph_windows <- log_reg_output %>% 
+  na.omit() %>%
+  rename(P = "Pr(>|z|)") %>%
+  arrange(P) %>%
+  filter(Variable == "anoph_density")
+
+# Subset to significant windows to reassess
+# 1504 - close but not really
+landscape_model <- glm(Window_1504 ~ anoph_density * Cluster, data = landscape_sample_data_analysis, family = "binomial")
+landscape_model_2 <- glm(Window_1504 ~ anoph_density, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_3 <- glm(Window_1504 ~ anoph_density + Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+
+summary(landscape_model) 
+summary(landscape_model_2)
+summary(landscape_model_3) # model 3 is best fit - not significant
+
+r.squaredGLMM(landscape_model)
+r.squaredGLMM(landscape_model_2)
+r.squaredGLMM(landscape_model_3) # 90% of variation
+
+car::Anova(landscape_model_3) %>%
+  as.data.frame(row.names = NULL)
+
+landscape_sample_data_analysis %>% 
+  ggplot(aes(x = Window_1504, y = anoph_density)) + 
+  geom_boxplot()
+
+# 1236
+landscape_model <- glm(Window_1236 ~ anoph_density * Cluster, data = landscape_sample_data_analysis, family = "binomial")
+landscape_model_2 <- glm(Window_1236 ~ anoph_density, data = landscape_sample_data_analysis, family = "binomial") 
+landscape_model_3 <- glm(Window_1236 ~ anoph_density + Cluster, data = landscape_sample_data_analysis, family = "binomial") 
+
+summary(landscape_model) 
+summary(landscape_model_2) # model 2 is best fit
+summary(landscape_model_3)
+
+r.squaredGLMM(landscape_model)
+r.squaredGLMM(landscape_model_2) # but the variable only explains ~70% of the variance
+r.squaredGLMM(landscape_model_3)
+
+car::Anova(landscape_model_2) %>%
+  as.data.frame(row.names = NULL)
+
+landscape_sample_data_analysis %>% 
+  ggplot(aes(x = Window_1236, y = anoph_density)) + 
+  geom_boxplot()
+```
+
+**Window 1236 is negatively associated with anopheles density - only 4 samples**
+
+# Map plots showing distribution of sampling and rasters
+
+## Anopheles Layer 
+
+```{r}
+# Get malayis map data
+malaysia <- ne_states(country = c("malaysia", "indonesia"), returnclass = "sf") %>% 
+  mutate(name = ifelse(name != "Sabah" & name != "Sarawak", "Other", name))
+
+# Plot Malaysia with raster layer and district points added
+plot_1 <- ggplot() +
+  geom_sf(data = malaysia, col = "transparent") +
+  scale_x_continuous(limits = c(107, 120)) +
+  scale_y_continuous(limits = c(-4.5, 7)) +
+  geom_raster(data = anoph_raster_df, mapping = aes(x = x, y = y, fill = z)) +
+  geom_sf(data = st_as_sf(polygon_data), col = "red", fill = "transparent") +
+  scale_fill_viridis_c() +
+  ylab("Latitude") +
+  xlab("Longitude") +
+  theme(legend.position = "none")
+
+plot_2 <- ggplot() +
+  geom_sf(data = malaysia, col = "transparent") +
+  geom_raster(data = anoph_raster_df, mapping = aes(x = x, y = y, fill = z)) +
+  geom_sf(data = st_as_sf(polygon_data), col = "red", fill = "transparent") +
+  scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
+  scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
+  scale_fill_viridis_c() +
+  ylab("Latitude") +
+  xlab("Longitude") +
+  labs(fill = "ALC Layer")
+
+plot_raster <- grid.arrange(plot_1, plot_2, ncol = 2)
+save_fig(plot_raster, "ALC_raster", width = 10, height = 6)
+
+```
+
+## Tree cover percentage layer & tree cover p:a ratio layer 
+```{r,warning=F,message=F}
+# Percentage
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "pland" & class_name == "Trees" & !is.na(n))
+
+polygon_data_landscape <- landscape_sample_data_analysis %>%
+  dplyr::select(value, sampleid)  %>%
+  rename(Percentage_TC = value) %>%
+  left_join(sample_coords) %>%
+  dplyr::select(x_gpsbackup, y_gpsbackup, sampleid, Percentage_TC) %>%
+  pts2poly_centroids(0.0225, crs = 4326, agr = "constant") %>% # create polygons based on the 2.5km radius 
+  vect() 
+
+plot_1 <- ggplot() +
+  geom_sf(data = malaysia, col = "transparent") +
+  geom_sf(data = st_as_sf(polygon_data_landscape), col = "red", mapping = aes(fill = Percentage_TC)) +
+  scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
+  scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
+  theme_dark() +
+  scale_fill_viridis_c() +
+  ylab("Latitude") +
+  xlab("Longitude") 
+
+# P:A ratio
+landscape_sample_data_analysis <- landscape_sample_data %>% 
+  filter(metric == "para_mn" & class_name == "Trees" & !is.na(n))
+
+polygon_data_landscape <- landscape_sample_data_analysis %>%
+  dplyr::select(value, sampleid)  %>%
+  rename(PA_ratio_TC = value) %>%
+  left_join(sample_coords) %>%
+  dplyr::select(x_gpsbackup, y_gpsbackup, sampleid, PA_ratio_TC) %>%
+  pts2poly_centroids(0.0225, crs = 4326, agr = "constant") %>% # create polygons based on the 2.5km radius 
+  vect() 
+
+plot_2 <- ggplot() +
+  geom_sf(data = malaysia, col = "transparent") +
+  geom_sf(data = st_as_sf(polygon_data_landscape), col = "red", mapping = aes(fill = PA_ratio_TC)) +
+  scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
+  scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
+  theme_dark() +
+  scale_fill_viridis_c() +
+  ylab("Latitude") +
+  xlab("Longitude") 
+
+plot_raster <- grid.arrange(plot_1, plot_2, ncol = 2)
+save_fig(plot_raster, "TC_raster", width = 10, height = 6)
+```
+
+
+
+
+
+
+```{r}
+# Utility chunk (CSIRO app shp) — NOT a poster output. Disabled in migration:
+#   - the Downloads example .shp was an absolute path to a throwaway str() check (dropped)
+#   - st_write(append=TRUE) would mutate the imported raw malaysia.shp; eval=FALSE to keep raw read-only
+# To regenerate malaysia.shp, re-enable and point st_write at data/processed/.
+```
+
+```{r, eval=FALSE}
+# read_sf("~/Downloads/Example files/example_shp_poly/poly_10.shp") %>% str()  # dropped: exploratory, missing dep
+ne_states(country = c("malaysia"), returnclass = "sf") %>%
+  select(name) %>%
+  filter(name == "Sabah") %>%
+  st_cast("POLYGON") %>%
+  rename(site_id = name) %>%
+  rownames_to_column("name_1") %>%
+  unite(site_id, 1:2) %>%
+  st_write("data/processed/malaysia.shp", append=FALSE)
+```
+
+
+
+```{r, eval=FALSE}
+# EXCLUDED in migration: this chunk read clinical/epi xlsx (PK_Sabah_Sample_naming_indexes
+# + Epi_data_for_ZB_inventory) only to View() sample enrolment dates interactively.
+# Output never assigned or used downstream, and the source files hold identifiable clinical
+# data — intentionally not imported into the clean project. Re-enable only with a
+# de-identified metadata source if enrolment dates are needed.
+```
+
+
+# Is there a relationship between genetic distance (IBD) and spatial distance
+
+```{r}
+library(geosphere)
+
+
+dist_matrix <- distm(
+  x = sample_coords %>% dplyr::select(x_gpsbackup, y_gpsbackup),
+  fun = distHaversine  # You can use other distance measures (e.g., distVincentyEllipsoid)
+)
+
+rownames(dist_matrix) <- sample_coords$sampleid
+colnames(dist_matrix) <- sample_coords$sampleid
+
+dist_matrix <- dist_matrix %>%
+  as.data.frame() %>% 
+  rownames_to_column("sample1") %>%
+  pivot_longer(2:ncol(.), names_to = "sample2", values_to = "distance") %>%
+  mutate(pairwise = paste0(sample1, "-", sample2)) %>%
+  dplyr::select(pairwise, distance) %>%
+  left_join(
+    read.table("data/raw/hmmIBD/Pk.hmm_fract_revisions.txt") %>%
+      row_to_names(1) %>%
+      mutate(sample1 = str_remove(sample1, "_DK.*"),
+             sample2 = str_remove(sample2, "_DK.*")) %>%
+      dplyr::select(sample1, sample2, fract_sites_IBD) %>%
+      mutate(pairwise = paste0(sample1, "-", sample2)) %>%
+      dplyr::select(pairwise, fract_sites_IBD) 
+  ) %>% 
+  na.omit() %>%
+  mutate(fract_sites_IBD = as.numeric(fract_sites_IBD))
+
+shapiro.test(dist_matrix$distance)
+shapiro.test(dist_matrix$fract_sites_IBD)
+
+
+cor.test(dist_matrix$distance, dist_matrix$fract_sites_IBD, method = "spearman")
+
+glm(fract_sites_IBD ~ distance, data = dist_matrix) %>%
+  summary()
+```
+
