@@ -3,7 +3,6 @@
 # or already-public file, un-ignore it explicitly, e.g.:  !examples/toy.csv
 
 # === Research data & large/binary outputs — never commit ===
-data/
 raw/
 results/
 output/
@@ -139,6 +138,13 @@ Thumbs.db
 !results/.gitkeep
 !figures/.gitkeep
 !outputs/.gitkeep
-!data/
+
+# data/: ignore ALL real data, keep only the two scaffolding .gitkeeps.
+# (Never blanket-ignore `data/` itself, or git can't descend to keep the .gitkeeps.)
+data/*
+!data/raw
+!data/processed
+data/raw/*
+data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
