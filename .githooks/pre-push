@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Portable defense-in-depth pre-push hook (catches ANY push — manual or agent).
+# Vendored from JacobAFW/bio-skills git-hooks/pre-push; scan.sh lives alongside it.
+#
+# Activate (per clone; core.hooksPath is local config, not committed):
+#   git config core.hooksPath .githooks
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+
+# --- project rule: NOTHING under data/ is ever tracked (except .gitkeep) -----
+# This is the rule that would have caught the 2026-06-25 leak (coord .txt files
+# the extension-based scanner misses). Hard block.
+tracked_data=$(git ls-files 'data/**' 2>/dev/null | grep -v '/\.gitkeep$' || true)
+if [ -n "$tracked_data" ]; then
+  echo "pre-push BLOCKED: tracked files under data/ (no data/PII in git — ever):" >&2
+  printf '  %s\n' $tracked_data >&2
+  echo "Fix: git rm --cached <file> ; confirm .gitignore covers it ; recommit." >&2
+  exit 1
+fi
+
+# --- project rule: NO sample/study codes in tracked files (black-and-white) -
+# Barcoded library IDs (_DKDN.../_DKDL...) + bare study codes. If a legit file
+# trips this, externalise the IDs to a gitignored file and reference it.
+code_re='_DK(DN|DL)[0-9]|(KK|MK|MF|LK|PCM|QDM|QEM|REM|RK|SK|TF|TK|TV|NKB|NKM|NKT|NKU|NLD|NQE|NRU|NSD|NSP|NTM|NTW)[0-9]{2,}'
+code_hits=$(git ls-files -z | xargs -0 grep -lE "$code_re" 2>/dev/null || true)
+if [ -n "$code_hits" ]; then
+  echo "pre-push BLOCKED: sample/study codes in tracked files (no sample IDs in git):" >&2
+  printf '  %s\n' $code_hits >&2
+  echo "Fix: externalise the IDs to a gitignored file + reference it; recommit." >&2
+  exit 1
+fi
+
+# --- deterministic pattern scan (data extensions, secret tokens, sample sheets)
+scan="$here/scan.sh"
+[ -x "$scan" ] || scan="$(git rev-parse --show-toplevel)/scripts/scan.sh"
+if [ ! -x "$scan" ]; then
+  echo "pre-push: scan.sh not found; ran data/ guard only." >&2
+  exit 0
+fi
+exec "$scan" tracked

@@ -565,19 +565,15 @@ clonal_samples("Mf", .05) %>% head()
 
 
 # Kudat outbreak
+# Problem-sample IDs held OUT of the repo (PII). Copy hmmibd_drop.txt into this cwd
+# (one ID per line) before running. Preserves the original substring-match behaviour.
+drop_pat <- paste(readLines("hmmibd_drop.txt"), collapse = "|")
+
 Kudat_outbreak <- clonal_samples("Mf", .05) %>%
-  #group_by(district1) %>% 
+  #group_by(district1) %>%
   #summarise(n())
-  filter((district1 == "Kudat" | district1 == "Tuaran" | district1 == "Kota Marudu" | district1 == "Beluran") & ((district2 == "Kudat" | district2 == "Tuaran" | district2 == "Kota Marudu" | district2 == "Beluran"))) %>% 
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>% 
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) %>%
-  filter(!grepl("REDACTED", sample1) & !grepl("REDACTED", sample2)) 
+  filter((district1 == "Kudat" | district1 == "Tuaran" | district1 == "Kota Marudu" | district1 == "Beluran") & ((district2 == "Kudat" | district2 == "Tuaran" | district2 == "Kota Marudu" | district2 == "Beluran"))) %>%
+  filter(!grepl(drop_pat, sample1) & !grepl(drop_pat, sample2))
    # need to make sure there are samples joining MANY samples to comfirm its the large cluster
 
 cluster_plot <- Kudat_outbreak %>% 

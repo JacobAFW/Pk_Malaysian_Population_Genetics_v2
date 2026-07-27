@@ -360,7 +360,9 @@ cd /g/data/pq84/malaria/Parasite_and_human_genetic_risk_factors_for_Pk_malaria/o
 
 echo "---------------------------------------"
 echo "Exclude high fws samples"
-bcftools view Consensus_SNPs_subset.vcf.gz -s ^ERR2214842,ERR2214850,ERR2214856,ERR3374041,ERR3374048,ERR3374050,ERR3374056,ERR985375,ERR985376,ERR985386,ERR985395,ERR985396,ERR985397,ERR985405,ERR985409,ERR985410,ERR985417,ERR985419,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED,REDACTED \
+# Exclusion IDs (high-fws/MOI) are held OUT of the repo (PII). Copy high_fws_exclude.txt
+# into this cwd on Gadi before running (one sample ID per line).
+bcftools view Consensus_SNPs_subset.vcf.gz -S ^high_fws_exclude.txt \
   | bcftools view -f PASS - | bcftools view -e "MAC<2" -o Consensus_SNPs_subset_no_MOI.vcf.gz
 
 echo "---------------------------------------"
@@ -2248,15 +2250,10 @@ Metadata <- readxl::read_xlsx("/g/data/pq84/malaria/Parasite_and_human_genetic_r
         add_column(Cluster = "Peninsular") 
       ) %>%
     mutate(Location = str_replace(Location, " ", "_")) %>%
-    mutate(Cluster = ifelse(grepl("REDACTED", Sample) | # does the ID match any of these
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) |
-                                grepl("REDACTED", Sample) |  
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample), "Mn", .$Cluster)) %>% # if not, just use values from Cluster
+    # Mn-cluster sample IDs are held OUT of the repo (PII). Copy
+    # mn_cluster_samples.txt (one bare sample ID per line) into the cwd on Gadi
+    # before knitting; grepl preserves the original substring-match semantics.
+    mutate(Cluster = ifelse(grepl(paste(readLines("mn_cluster_samples.txt"), collapse = "|"), Sample), "Mn", .$Cluster)) %>%
     mutate(Cluster = ifelse(Cluster == "Sabah", "Mf", .$Cluster))
 
 SNP_Frequency <- annotated_orthologue_genes %>%
@@ -2354,18 +2351,13 @@ NJT_metadata <- read_csv("/g/data/pq84/malaria/Pk_Malaysian_Population_Genetics/
         rename(Cluster = X7) %>% 
         as.data.frame() 
 
-NJT_metadata <- NJT_metadata %>% 
-    mutate(Cluster = ifelse(grepl("REDACTED", Sample) | # does the ID match any of these
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) |
-                                grepl("REDACTED", Sample) |  
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample) | 
-                                grepl("REDACTED", Sample), "Mn", .$Cluster)) %>% # if not, just use values from X7 - clusters and Sabah
+NJT_metadata <- NJT_metadata %>%
+    # Mn-cluster sample IDs are held OUT of the repo (PII). Copy
+    # mn_cluster_samples.txt (one bare sample ID per line) into the cwd on Gadi
+    # before knitting; grepl preserves the original substring-match semantics.
+    mutate(Cluster = ifelse(grepl(paste(readLines("mn_cluster_samples.txt"), collapse = "|"), Sample), "Mn", .$Cluster)) %>%
     mutate(Cluster = ifelse(Cluster == "Sabah", "Mf", .$Cluster)) %>% # if its the remaining Sabah samples, make them Mn, else keep them the same
-    mutate_all(~str_remove(., "_DKD.*")) 
+    mutate_all(~str_remove(., "_DKD.*"))
 
 # Plot tree
 ## options(ignore.negative.edge=TRUE)
