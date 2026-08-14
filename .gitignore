@@ -148,3 +148,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
+# Internal project-management notes (not for public repo)
+DECISIONS.md
+STATUS.md
