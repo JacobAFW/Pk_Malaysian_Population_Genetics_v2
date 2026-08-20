@@ -16,25 +16,31 @@ suppressPackageStartupMessages({ library(tidyverse); library(data.table) })
 make_hmmibd_tsv <- function(vcf_path, grep_patterns_path, out_tsv, skip_header_lines = 72) {
   stopifnot(file.exists(vcf_path), file.exists(grep_patterns_path))
   # skip_header_lines: number of ## header lines in the VCF before #CHROM row.
-  # (72 in the original, but varies — see wrapper below that autodetects.)
-  read_tsv(grep_patterns_path, col_names = c("CHROM", "POS"), show_col_types = FALSE) |>
-    mutate(POS = as.numeric(POS)) |>
-    left_join(
-      read_table(vcf_path, skip = skip_header_lines, show_col_types = FALSE) |>
-        rename(CHROM = `#CHROM`) |> mutate(POS = as.numeric(POS)),
-      by = c("CHROM", "POS")
-    ) |>
+  # (72 in the original, but varies — see count_vcf_header() below.)
+  patterns <- read_tsv(grep_patterns_path, col_names = c("CHROM", "POS"),
+                       show_col_types = FALSE) |>
+    mutate(POS = as.numeric(POS))
+  vcf <- read_table(vcf_path, skip = skip_header_lines, show_col_types = FALSE) |>
+    rename(CHROM = `#CHROM`) |>
+    mutate(POS = as.numeric(POS))
+  df <- patterns |> left_join(vcf, by = c("CHROM", "POS")) |>
     mutate(CHROM = str_remove(CHROM, "ordered_PKNH_"),
-           CHROM = str_remove(CHROM, "_v2")) |>
-    mutate_at(c(10:ncol(across(everything()))), ~ str_remove(., ":.*")) |>
-    mutate_at(c(10:ncol(across(everything()))),
-              ~ case_when(. %like% "1/1|1/0|0/1" ~ "1",
-                          . %like% "2/2|2/0|0/2" ~ "2",
-                          . %like% "3/3|3/0|0/3" ~ "3",
-                          . %like% "4/4|4/0|0/4" ~ "4",
-                          . %like% "0/0"          ~ "0",
-                          . %like% "./."          ~ "-1",
-                          TRUE                    ~ .)) |>
+           CHROM = str_remove(CHROM, "_v2"))
+
+  # sample columns are 10..ncol(df) (VCF cols 1..9 are fixed + FORMAT).
+  sample_cols <- names(df)[10:ncol(df)]
+  df <- df |>
+    mutate(across(all_of(sample_cols), ~ str_remove(., ":.*"))) |>
+    mutate(across(all_of(sample_cols),
+      ~ case_when(. %like% "1/1|1/0|0/1" ~ "1",
+                  . %like% "2/2|2/0|0/2" ~ "2",
+                  . %like% "3/3|3/0|0/3" ~ "3",
+                  . %like% "4/4|4/0|0/4" ~ "4",
+                  . %like% "0/0"          ~ "0",
+                  . %like% "./."          ~ "-1",
+                  TRUE                    ~ .)))
+
+  df |>
     dplyr::select(-c(3:9)) |>
     arrange(CHROM, POS) |>
     write_tsv(out_tsv)
