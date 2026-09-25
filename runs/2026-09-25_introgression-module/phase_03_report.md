@@ -30,7 +30,8 @@ defaults documented in the script header and agnostic spec §9.5. **Seed 2026092
 own, declared in `config/malay_cohort.yaml` and used identically for both arms. The one value I
 had to choose is **`--max-n 60`**: the module default is 25, which is *below* the answer on this
 cohort and would have truncated the search — the spec records N = 44 for the 558-basis Malay
-benchmark, so any bound under that silently returns the bound instead of the derivation. 60 is a
+benchmark, so any bound under that returns the bound instead of the derivation (the script does
+warn when no N within the bound meets the target, so it would not have been silent). 60 is a
 search ceiling, not a threshold; the chosen N (41/40) sits well inside it.
 
 **Arm-specific cluster tables.** The floor's null scales with each cluster's true n, so the
@@ -45,8 +46,8 @@ Peninsular 28) rather than reusing the full table.
 ## Key numbers
 
 **Eligibility universe** (recomputed from the genotype table, not assumed):
-**1,363 windows**; per-sample eligible median 1,362 (min 1,222). Full arm 50,970 raw calls →
-47,079 distinct (sample, window); de-clonalized 50,970 → 44,662 over 484 samples. The script's
+**1,363 windows**; per-sample eligible median 1,362 (min 1,222). Full arm **53,615** raw calls →
+**46,954** distinct (sample, window) over 501 samples; de-clonalized 50,970 → 44,662 over 484. The script's
 own consistency check passed on both arms: every observed call lies inside the eligible set.
 Source: `floor_derivation_*.tsv` columns `universe_windows`,
 `eligible_windows_per_sample_median`.
@@ -98,16 +99,17 @@ hypervariable masks that run *after* the floor. Both are in the tables named abo
 The FDR-safe floor scales with cluster size — Mf 41, Mn 18, Peninsular 10 (full arm) — so a
 single global floor is set by the largest cluster and is four times what the smallest cluster's
 own FDR argument requires. At N = 41 the Peninsular cluster retains **zero** windows. It does
-not die at the floor: it is already at zero from N = 25 in the full arm and N = 20
-de-clonalized, both far below 41. Per mission §5 this is reported, not tuned around, and
+not die at the floor: on the sweep grid it is already at zero from N = 25 in the full arm and
+N = 20 de-clonalized, and the derivation table (support floor only, no grid) puts the onset
+earlier still at **N = 23 / N = 18** — all far below 41. Per mission §5 this is reported, not tuned around, and
 per-cluster floors (Mf 41 / Mn 18 / Pen 10) were **not** adopted — the module docs record that
 option as explicitly rejected for reintroducing the size dependence the floor exists to remove.
 
 **2. The mission's headline pair survives, but the Mn side is thin.** Mf↔Mn is the headline
-(mission §1), and at the derived floor it stands: Mf 249 windows (full) / 242 (declonal) after
-the full filter chain. Mn holds **14** windows full and **7** de-clonalized. So the headline is
-supportable, but its Mn half rests on single-digit window counts in the de-clonalized arm, and
-at N = 50 the de-clonalized Mn column reaches zero. This should temper how strongly a
+(mission §1), and at each arm's *own* derived floor it stands: **Mf 249 windows at N = 41 (full)
+and Mf 244 at N = 40 (de-clonalized)** after the full filter chain, with Mn holding **14** and
+**10** respectively. So the headline is supportable, but its Mn half rests on low-double-digit
+window counts, and the de-clonalized Mn column reaches zero by N = 50. This should temper how strongly a
 "Mf↔Mn intermixing" claim is worded at the window level; the sample-level result from phase 2 is
 the robust part.
 
@@ -148,3 +150,32 @@ considered: (a) aggregate at a floor that keeps Peninsular alive (e.g. 10) — r
 exactly the tuning mission §5 forbids; the sweep already reports what every floor yields, which
 is the honest way to show it. (b) Aggregate only the full arm and treat de-clonalized as a
 sensitivity check — rejected, the mission requires both arms reported, not one with a footnote.
+
+---
+
+## Revision note (phase-3 review returned REVISE)
+
+Four corrections to this report's text. **No output changed and nothing was re-run** — the four
+TSVs are unaltered and were independently verified correct; these were transcription errors on
+my side.
+
+1. **Full-arm call counts were wrong.** I wrote "50,970 raw calls → 47,079 distinct" for the full
+   arm. 50,970 is the *de-clonalized* raw count, pasted into the full-arm slot, and 47,079 was not
+   reproducible from any dedup key. The full arm is **53,615 raw → 46,954 distinct (sample,
+   window)**; the de-clonalized figures (50,970 → 44,662) were right. Both recomputed directly
+   from `calls/<arm>/*.tsv`.
+2. **Finding 2 quoted the de-clonalized arm at the wrong floor.** I gave "Mf 242 / Mn 7", which is
+   the sweep's N = 41 row; the de-clonalized arm's *own* chosen floor is N = 40, where the values
+   are **Mf 244 / Mn 10**. This slightly strengthens the headline rather than weakening it, and
+   "single-digit" was therefore wrong — corrected to low-double-digit.
+3. **"Silently returns the bound" overstated the `--max-n` risk.** The script warns when no N
+   within the bound meets the target, so a truncated search would have been visible. The reason
+   for raising the bound stands; the characterisation was too strong.
+4. **Added the earlier zero-onset for Peninsular** from the derivation table (support floor only):
+   N = 23 full / N = 18 de-clonalized, earlier than the N = 25 / N = 20 the sweep grid shows, and
+   more conservative for the finding.
+
+The reviewer also verified the full four-filter chain end-to-end against the sweep's own
+`aggregate.log` (53,615 → 53,584 → 26,275 → 25,520 → 24,658 calls / 263 windows / 471 samples at
+N = 41), which matches the sweep's N = 41 "all" row and confirms the derivation-vs-sweep count
+distinction described above.
