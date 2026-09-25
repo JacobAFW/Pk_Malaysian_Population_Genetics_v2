@@ -9,6 +9,10 @@
 #                         PHASE 3 UNDER `absolute` (41 full / 40 declonal).
 #                         The rule is then the only variable that changes, so
 #                         differences are attributable to the rule.
+#   cross-check "floor6" — every rule is aggregated at the PUBLISHED analysis's
+#                         per-cluster floor (n > 5, i.e. 6), the configuration the
+#                         Indo 558-basis scoreboard used, so our rule ranking is
+#                         directly comparable to it. `full` scenario only.
 #   secondary "own"     — every rule is aggregated at a floor re-derived from
 #                         its OWN calls by the same permutation/FDR procedure
 #                         (1,000 reps, same seed, same targets). This stops a
@@ -68,8 +72,12 @@ for RULE in "${RULES[@]}"; do
 
   # --- aggregate every scenario under both floor policies -----------------
   for SCEN in "${SCENARIOS[@]}"; do
-    for POLICY in common own; do
-      case "$POLICY" in common) N=$COMMON_N;; own) N=$OWN_N;; esac
+    for POLICY in common own floor6; do
+      # floor6 is the published analysis's per-cluster floor (n > 5). Only the
+      # `full` scenario is aggregated there — it exists for the cross-cohort
+      # comparison against the Indo 558-basis scoreboard, not for stability.
+      [ "$POLICY" = "floor6" ] && [ "$SCEN" != "full" ] && continue
+      case "$POLICY" in common) N=$COMMON_N;; own) N=$OWN_N;; floor6) N=6;; esac
       DEST="$OUT/$RULE/agg_${POLICY}/$SCEN"
       [ -s "$DEST/introgressed_windows_filtered.tsv" ] && continue
       mkdir -p "$DEST"
