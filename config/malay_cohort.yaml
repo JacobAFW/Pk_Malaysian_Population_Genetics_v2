@@ -1,0 +1,109 @@
+# Large-Malay cohort — introgression run config
+# Run: 2026-09-25_introgression-module   (see runs/2026-09-25_introgression-module/PLAN.md)
+#
+# Consumed by scripts/introgression_malay/*; the lifted module in
+# scripts/introgression_module/ takes every value as a CLI flag and never reads
+# this file. Everything cohort-specific lives here so the module stays generic.
+
+run_id: 2026-09-25_introgression-module
+
+# --------------------------------------------------------------------------
+# Inputs (MISSION.md §3). Paths are relative to the project root except where
+# marked absolute. All are read-only for this run.
+# --------------------------------------------------------------------------
+inputs:
+  genotype:   data/processed/introgression/hmmIBD.tsv
+  labels:     data/processed/cluster_maf/cluster_labels.tsv
+  gff:        data/gadi/gff/strain_A1_H.1.Icor.gff3
+  fasta:      data/gadi/fasta/strain_A1_H.1.Icor.fasta
+  fai:        data/gadi/fasta/strain_A1_H.1.Icor.fasta.fai
+  mask:       data/gadi/regions_to_mask.list
+  clonal_all: data/raw/hmmIBD/IBD_Clonal_transmission_miss5.tsv
+  clonal_mn:  data/raw/hmmIBD/Mn_clonal_transmission.tsv
+
+# --------------------------------------------------------------------------
+# Clonality source for the de-clonalized arm.
+#
+# MISSION.md §3 names the two `clonal_*` pair tables above. They cannot be used
+# directly: they carry FIELD sample codes (e.g. site-prefixed collection ids),
+# whereas the genotype table and the cluster labels use sequencing ids — the
+# intersection is EMPTY (0 of 21 named samples are genotype columns), so they
+# would silently de-clonalize nothing. They are kept as a cross-check only.
+#
+# The usable source is this project's own full pairwise hmmIBD output, which is
+# in the genotype id namespace and covers every clustered sample. The threshold
+# is not chosen here: `scripts/14b_clonal_networks.R` states this project's
+# clonality rule as fract_sites_IBD >= 0.98, and the named tables' own minimum
+# (0.98672) is consistent with it.
+# --------------------------------------------------------------------------
+clonality:
+  pairwise_ibd: data/gadi/validation/hmmIBD/Pk.hmm_fract.txt
+  id_columns: [sample1, sample2]
+  ibd_column: fract_sites_IBD
+  threshold: 0.98        # scripts/14b_clonal_networks.R — this project's own rule
+  representative_rule: "lowest F_MISS, alphabetical tie-break"
+
+# The poster result the run benchmarks against, by genomic coordinate.
+# `mn_windows.tsv` is not held in this project; the only copy is the read-only
+# ZOOMAL-Flow benchmark fixture, which is a 2026-08-17 copy of this cohort's
+# own truth (md5-identical filtered table). Copied in, never edited there.
+truth:
+  filtered:   data/raw/Introgression/introgressed_windows_filtered.tsv
+  mf_windows: data/raw/Introgression/mf_windows.tsv
+  mn_windows: ~/Desktop/Menzies/Knowlesi/Indonesia/Pop-gen_pipeline/agnostic/data/benchmark_malay/truth/mn_windows.tsv
+
+# --------------------------------------------------------------------------
+# Introgression parameters — module schema (agnostic spec §5).
+# Defaults are the shipped ones; per_cluster_min_samples is DERIVED on this
+# cohort in phase 3 and is deliberately left null until then.
+# --------------------------------------------------------------------------
+introgression:
+  window_size_bp: 10000
+  min_snps_per_window: 5
+  min_cluster_n: 5
+  min_samples_per_window: 2        # strict >: V1's n > 2
+  per_cluster_min_pct: 0           # absolute floor only (Stage-5b decision)
+  per_cluster_min_samples: null    # DERIVED in phase 3; null = not yet set
+  pairs: "all"                     # C(3,2) = Mf__Mn, Mf__Peninsular, Mn__Peninsular
+  pair_warn_threshold: 15
+  detection_rule: "absolute"       # V1 default; relative/distance compared in phase 6
+  contour_level_other: 5.0e-4
+  contour_level_own:   5.0e-4
+  distance_margin: 15
+  distance_adaptive: false
+  distance_adaptive_quantile: 0.9
+  focal_group: null                # mission §5: focal-subgroup test is N/A, not run
+  gene_family_filters:
+    - "SICA"
+    - "KIR"
+
+# The published Malay chain used an absolute per-cluster n > 5. Kept as the
+# comparison point for the derived floor, not as the shipped value.
+published_per_cluster_min_samples: 6
+
+# --------------------------------------------------------------------------
+# Arms. `full` is every clustered sample; `declonal` drops the non-
+# representative members of each clonal group (module docs/clonality.md rule:
+# lowest per-sample missingness, alphabetical tie-break).
+# --------------------------------------------------------------------------
+arms:
+  full:     exclude_full.txt        # empty — guaranteed no-op
+  declonal: exclude_unique.txt
+
+floor_derivation:
+  replicates: 1000
+  seed: 20260925
+  fdr_target: 0.05
+  max_expected_null_windows: 1
+
+benchmark:
+  drop_fractions: [0.10, 0.20]
+  seed: 20260925
+  rules: ["absolute", "relative", "distance"]
+
+outputs:
+  results_dir: results/2026-09-25_introgression-module
+  figures_dir: figures/2026-09-25_introgression-module
+
+compute:
+  threads: 3                       # protocol cap
