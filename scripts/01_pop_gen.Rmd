@@ -46,6 +46,7 @@ tes_genotype_clean <- tes_genotype %>%
 original <- read.table("data/raw/tess3r/clusters_combined.fam")
 gis <- read.table("data/raw/tess3r/complete_gis_na_omit.fam") 
 gis <- gis[order(match(gis$V1, original$V1)),]
+gis_ids <- gis$V1                      # keep IDs: needed to anchor Q columns to clusters
 gis <- gis %>%
      select(V7, V8) %>% 
      mutate(long = ifelse(V7 < V8, V8, V7)) %>%
@@ -90,16 +91,16 @@ plot(tess3.obj, pch = 19, col = "blue",
 # Ancestry matrix plots
 
 ```{r}
-my.colors <- unname(cluster_cols)   # Peninsular / Mf / Mn (Okabe-Ito, _setup.R)
-my.palette <- CreatePalette(my.colors, 10)
-
 # barplot
 q.matrix <- qmatrix(tess3.obj, K = 3)
+# Anchor the palette to what each Q column actually IS (see pk_q_palette in _setup.R).
+my.palette <- pk_q_palette(q.matrix, gis_ids, 10)
 #q.matrix <- read_tsv("data/raw/tess3r/q_matrix_clean.tsv", col_names = FALSE) %>% as.matrix()
 
 # STRUCTURE-like barplot for the Q-matrix  (base R: write png + svg directly)
 for (dev_fn in list(function() png(file.path(FIG_DIR, "tess3r_barplot.png"), width = 8, height = 6, units = "in", res = 300),
-                    function() svg(file.path(FIG_DIR, "tess3r_barplot.svg"), width = 8, height = 6))) {
+                    function() grDevices::pdf(file.path(FIG_DIR, "tess3r_barplot.pdf"), width = 8, height = 6),
+                    function() svglite::svglite(file.path(FIG_DIR, "tess3r_barplot.svg"), width = 8, height = 6))) {
   dev_fn()
   barplot(q.matrix, border = NA, space = 0,
           xlab = "Individuals", ylab = "Ancestry proportions",
@@ -119,8 +120,7 @@ plot(q.matrix, gis, method = "map.max", interpol = FieldsKrigModel(10),
 ```
 
 ```{r}
-my.colors <- unname(cluster_cols)
-my.palette <- CreatePalette(my.colors, 20)
+my.palette <- pk_q_palette(q.matrix, gis_ids, 20)
 
 map.polygon <- getMap(resolution = "high")
 
@@ -136,10 +136,9 @@ pl +
   geom_point(data = as.data.frame(gis), aes(x = long, y = lat), size = 0.2) + 
   xlab("Longitute") +
   ylab("Latitude") + 
-  theme_linedraw() +
-  theme_dark() 
+  theme_pk_map() 
 
-malaysia_shp <- getShp(country = "Malaysia", admin_level = c("admin0", "admin1", "admin2")) # to contain raster to Malaysia only 
+malaysia_shp <- pk_malaysia_shp()   # _setup.R: cached; malariaAtlas geoserver now 404s
 map.polygon <- getMap(resolution = "high") # for lines on final plot
 
 pl <- ggtess3Q(q.matrix, gis, map.polygon = malaysia_shp, col.palette = my.palette)
@@ -155,10 +154,8 @@ tess_plot <- pl +
   geom_point(data = as.data.frame(gis), aes(x = long, y = lat), size = 1, alpha = 0.5, colour = "#FDE725FF") + 
   xlab("Longitute") +
   ylab("Latitude") + 
-  theme_bw() +
-  coord_cartesian(expand = F) +
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.margin = unit(c(1,1,1,1), "cm")) 
-  scale_fill_manual(values = cluster_cols, name = "Cluster")
+  theme_pk_map() +
+  coord_cartesian(expand = F)
 
 save_fig(tess_plot, "tess_map", width = 10, height = 7)
 ```
@@ -179,6 +176,7 @@ admixture_table <- read.table("data/raw/tess3r/cleaned.3.Q") %>%
 gis <- read.table("data/raw/tess3r/complete_gis_na_omit.fam") 
 
 # Filter admixture by GIS - remove samples with missing GIS - add convert to matrix for  ggtess3Q
+admix_ids <- admixture_table %>% filter(Sample %in% gis$V1) %>% pull(Sample)
 admixture_matrix <- admixture_table %>%
   filter(Sample %in% gis$V1) %>%
   select(-Sample) %>%
@@ -214,10 +212,8 @@ admix_plot <- pl +
   geom_point(data = as.data.frame(gis), aes(x = long, y = lat), size = 1, alpha = 0.5, colour = "#FDE725FF") + 
   xlab("Longitute") +
   ylab("Latitude") + 
-  theme_bw() +
-  coord_cartesian(expand = F) +
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.margin = unit(c(1,1,1,1), "cm"))
-  scale_fill_manual(values = cluster_cols, name = "Cluster")
+  theme_pk_map() +
+  coord_cartesian(expand = F)
 
 ```
 
@@ -251,9 +247,9 @@ admixture_table_cluster %>%
 # Plot only Sabah
 
 ```{R}
-my.palette <- list(c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"), 
-                   c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"), 
-                   c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"))
+# Q-surface ramp, anchored to the ADMIXTURE component -> cluster correspondence rather
+# than applied in name order (was a hard-coded spectral ramp before the restyle).
+my.palette <- pk_q_palette(admixture_matrix, admix_ids, 10)
 
 
 
@@ -325,9 +321,8 @@ sabah_admix_plot <- pl +
   geom_point(data = geom_point_data, aes(x = long, y = lat, shape = Cluster), size = 1, alpha = 0.5, colour = "#161A1D") + 
   xlab("Longitute") +
   ylab("Latitude") + 
-  theme_bw() +
-  coord_cartesian(expand = F) +
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.margin = unit(c(1,1,1,1), "cm")) 
+  theme_pk_map() +
+  coord_cartesian(expand = F)
 
 #ggsave("figures/sabah_admix_map.png", dpi = 300, sabah_admix_plot, width = 10)
 ```
@@ -359,7 +354,8 @@ sabah_admix_plot <- ggplot() +
   ylab("Latitude") +
   xlab("Longitude") +
   labs(colour = "Ancestral populations (n)", shape = "Genomic cluster") +
-  scale_colour_manual(values = c("#73D055FF","#39568CFF", "#29AF7FFF"))
+  scale_colour_pk_ordinal(name = "Ancestral populations (n)") +
+  theme_pk_map()
 
 save_fig(sabah_admix_plot, "sabah_admix_distribution", width = 10, height = 7)
 
@@ -377,7 +373,8 @@ ggplot() +
   ylab("Latitude") +
   xlab("Longitude") +
   labs(colour = "Ancestral populations (n)", shape = "Genomic cluster") +
-  scale_colour_manual(values = c("#73D055FF","#39568CFF", "#29AF7FFF"))
+  scale_colour_pk_ordinal(name = "Ancestral populations (n)") +
+  theme_pk_map()
 ```
 
 
@@ -419,14 +416,7 @@ malaysia <- ne_states(country = c("malaysia", "indonesia"), returnclass = "sf") 
   mutate(name = ifelse(name != "Sabah" & name != "Sarawak", "Other", name))
 
 # ALC raster — fetched here if not already in env (script was originally co-run with 02)
-if (!exists("anoph_raster_df")) {
-  if (!exists("malaysia_shp")) malaysia_shp <- getShp(country = "Malaysia", admin_level = c("admin0", "admin1", "admin2"))
-  if (!exists("anoph_raster"))  anoph_raster  <- getRaster(dataset_id = "Explorer__2016_Anopheles_leucosphyrus_complex")
-  anoph_raster_df <- {
-    df <- terra::as.data.frame(anoph_raster, xy = TRUE, na.rm = TRUE)
-    stats::setNames(df, c("x", "y", "z"))
-  }
-}
+if (!exists("anoph_raster_df")) anoph_raster_df <- pk_anoph_raster_df()  # _setup.R cache
 
 # Plot Malaysia with raster layer and district points added
 plot_1 <- ggplot() +
@@ -435,11 +425,12 @@ plot_1 <- ggplot() +
   scale_y_continuous(limits = c(-4.5, 7)) +
   geom_raster(data = anoph_raster_df, mapping = aes(x = x, y = y, fill = z)) +
   geom_point(data = geom_point_data, aes(x = long, y = lat, shape = Cluster)) +
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous(name = "ALC layer") +
+  scale_colour_pk_cluster() +
   ylab("Latitude") +
   xlab("Longitude") +
-  theme(legend.position = "none") +
-  scale_colour_manual(values = c("#f9c74f","#f94144"))
+  theme_pk_map() +
+  theme(legend.position = "none")
 
 plot_2 <- ggplot() +
   geom_sf(data = malaysia, col = "transparent") +
@@ -447,11 +438,11 @@ plot_2 <- ggplot() +
   geom_point(data = geom_point_data, aes(x = long, y = lat, shape = Cluster, colour = Cluster)) +
   xlim(115, 120) + 
   ylim(4, 7.5) + 
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous(name = "ALC layer") +
+  scale_colour_pk_cluster() +
   ylab("Latitude") +
   xlab("Longitude") +
-  labs(fill = "ALC Layer") +
-  scale_colour_manual(values = c("#f9c74f","#f94144"))
+  theme_pk_map()
 
 plot_raster <- grid.arrange(plot_1, plot_2, ncol = 2)
 save_fig(plot_raster, "ALC_raster_full_dataset", width = 10, height = 6)
@@ -613,9 +604,9 @@ r.squaredGLMM(regression_model) # pseudo R2
 # Add elevation to tess3r plot
 
 ```{R}
-my.palette <- list(c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"), 
-                   c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"), 
-                   c("#f94144", "#f3722c", "#f8961e", "#f9844a", "#f9c74f", "#90be6d", "#43aa8b", "#4d908e", "#577590", "#277da1"))
+# Q-surface ramp, anchored to the ADMIXTURE component -> cluster correspondence rather
+# than applied in name order (was a hard-coded spectral ramp before the restyle).
+my.palette <- pk_q_palette(admixture_matrix, admix_ids, 10)
 
 # Plot polygon
 sabah_admix_plot <- pl +
@@ -627,9 +618,8 @@ sabah_admix_plot <- pl +
   geom_point(data = test_data, aes(x = long, y = lat, shape = Cluster, size = altitude), alpha = 0.5, colour = "#161A1D") + 
   xlab("Longitute") +
   ylab("Latitude") + 
-  theme_bw() +
+  theme_pk_map() +
   coord_cartesian(expand = F) +
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.margin = unit(c(1,1,1,1), "cm")) +
   scale_size(name = "Elevation")
 
 save_fig(sabah_admix_plot, "sabah_admix_map", width = 10, height = 7)
@@ -835,7 +825,8 @@ clonal_cluster_plot <- ggplot() +
   ylab("Latitude") +
   xlab("Longitude") +
   labs(colour = "Clonal cluster", shape = "Genomic cluster") +
-  scale_colour_viridis_d()
+  scale_colour_viridis_d() +
+  theme_pk_map()
   #scale_colour_manual(values = c("#73D055FF","#39568CFF", "#29AF7FFF"))
 
 save_fig(clonal_cluster_plot, "clonal_cluster_plot", width = 10, height = 7)
@@ -888,7 +879,7 @@ intro_admix %>%
   ggplot(aes(x = Mixed, y = introgression)) + 
   geom_boxplot() +
   geom_jitter(aes(colour = Cluster)) +
-  scale_colour_manual(values = c("#440154FF", "#39568CFF")) +
+  scale_colour_pk_cluster() +
   ylab(Introgression)
 ```
 # Investigate introgressed regions in admixed samples

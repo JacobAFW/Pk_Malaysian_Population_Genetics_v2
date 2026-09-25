@@ -152,3 +152,4 @@ data/processed/*
 # Internal project-management notes (not for public repo)
 DECISIONS.md
 STATUS.md
+.claude/settings.local.json

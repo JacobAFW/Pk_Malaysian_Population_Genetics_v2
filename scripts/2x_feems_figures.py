@@ -47,13 +47,21 @@ LW_FRAME = 1.07                 # panel border / coastline stroke-width in the r
 LW_THIN = 0.43
 COAST = "#000000"
 
-# FEEMS convention -- do not restyle. Copied verbatim from feems/viz.py.
-EEMS_COLORS = ["#994000", "#CC5800", "#FF8F33", "#FFAD66", "#FFCA99", "#FFE6CC",
-               "#FBFBFB", "#CCFDFF", "#99F8FF", "#66F0FF", "#33E4FF", "#00AACC", "#007A99"]
-EDGE_CMAP = clr.LinearSegmentedColormap.from_list("eems_colors", EEMS_COLORS, N=256)
+# Migration colourmap. The project style is viridis-family, so this uses INFERNO rather than
+# the FEEMS default orange<->blue, at Jacob's request (keeps viridis proper reserved for the
+# genomic clusters). Caveat, stated on the figure and in the note: w/wbar is a DIVERGING
+# quantity centred on 1, and a sequential ramp has no natural midpoint. That is acceptable
+# here only because the surface is near-uniform and nothing is significant; the limits are
+# set symmetric in log10 and the mean is marked on the colourbar.
+# To make it diverging-correct, swap the two lines below for a Crameri `vik` (or `roma`,
+# or cmocean `balance`) ramp -- one-line change, everything else is unaffected:
+#     from cmcrameri import cm as cmc; EDGE_CMAP = cmc.vik
+EDGE_CMAP = plt.get_cmap("inferno")
+CMAP_NAME = "inferno, sequential"
 
-UNSUPPORTED = "#d9d9d9"         # lattice drawn but greyed: present, not distinguishable
-DEME_FACE = "#bdbdbd"
+PANEL_BG = "#7F7F7F"            # R "grey50" = ggplot2 theme_dark() panel fill, as used by the R maps
+UNSUPPORTED = "#b3b3b3"         # lattice drawn but greyed: present, not distinguishable
+DEME_FACE = "#e8e8e8"           # light marker face so demes read against the dark panel
 
 FIGS = [
     {"out": "feems_Mf_only", "tag": "Mf_only", "scheme": "individual",
@@ -81,7 +89,7 @@ def set_style():
         "ytick.major.size": 2.75,
         "axes.grid": False,
         "figure.facecolor": "white",
-        "axes.facecolor": "white",
+        "axes.facecolor": PANEL_BG,
         "savefig.facecolor": "white",
         # mathtext (lambda, w/wbar, exponents) must not fall back to DejaVu in the vector output
         "mathtext.fontset": "custom",
@@ -136,7 +144,7 @@ def draw_panel(ax, rings, ends, r, mask, demes, abs_max, title, edge_lw=0.9,
         # weight is near the surface mean. Give supported edges a thin dark casing so they are
         # FINDABLE; colour still encodes the magnitude, which is not exaggerated.
         if emphasise and on.size < len(mask):
-            ax.add_collection(LineCollection(segs_of(on), colors=["#3f3f3f"] * on.size,
+            ax.add_collection(LineCollection(segs_of(on), colors=["#000000"] * on.size,
                                              linewidths=edge_lw * 3.0, zorder=4,
                                              capstyle="round"))
         ax.add_collection(LineCollection(segs_of(on), colors=[EDGE_CMAP(norm(r[i])) for i in on],
@@ -227,9 +235,12 @@ def build(cfg, args, abs_max):
     cb = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=EDGE_CMAP), cax=cax,
                       orientation="vertical")
     cb.set_ticks([-abs_max, 0, abs_max])
-    cb.set_ticklabels([f"$10^{{-{abs_max:g}}}$", "$10^{0}$", f"$10^{{{abs_max:g}}}$"])
+    cb.set_ticklabels([f"$10^{{-{abs_max:g}}}$", "$10^{0}$  (mean)", f"$10^{{{abs_max:g}}}$"])
     cb.outline.set_linewidth(LW_THIN)
     cb.ax.tick_params(width=LW_THIN, length=2.5, labelsize=TXT, pad=2)
+    # A sequential ramp has no natural midpoint, so mark where the surface mean sits.
+    # NB axhline() takes DATA coordinates on a colorbar axis, not an axes fraction.
+    cb.ax.axhline(0.0, color="white", lw=1.2)
     fig.text(LX / FW, (BOT + PH * 1.00) / FH, "$w\\,/\\,\\bar{w}$",
              fontsize=TITLE, ha="left", va="top")
     fig.text(LX / FW, (BOT + PH * 0.945) / FH, "effective migration",
@@ -262,7 +273,8 @@ def build(cfg, args, abs_max):
         f"{n_boot} replicates; edges supported at 95% CI: {n_sup}/{n_edges}. "
         f"The surface is near-uniform and no barrier is statistically supported — grey edges in "
         f"(b) are present in the lattice but indistinguishable from uniform migration. "
-        f"Power-limited at this n; not evidence of absence. Colour scale is shared across figures."
+        f"Power-limited at this n; not evidence of absence. Colour scale ({CMAP_NAME}) is shared "
+        f"across figures and symmetric in log10 about the surface mean."
     )
     wrapped = "\n".join(textwrap.wrap(foot, width=150, break_long_words=False))
     fig.text(L / FW, 0.16 / FH, wrapped, fontsize=TXT, ha="left", va="bottom", linespacing=1.6)

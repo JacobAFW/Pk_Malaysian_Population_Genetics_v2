@@ -60,18 +60,11 @@ This Rmd describes four separate analyses that explore the relationship between 
 ### Download & wrangle anopheles data from malaria atlas - get district-level anopheles density 
 
 ```{r,warning=F,message=F}
-# What rasters are available (malariaAtlas 1.6.0+: listData defunct, use listRaster)
-listRaster()
-
-# Get data
-malaysia_shp <- getShp(country = "Malaysia", admin_level = c("admin0", "admin1", "admin2"))
-anoph_raster <- getRaster(dataset_id = "Explorer__2016_Anopheles_leucosphyrus_complex", shp = malaysia_shp) # only available for 2016
-anoph_raster <- getRaster(dataset_id = "Explorer__2016_Anopheles_leucosphyrus_complex") # needed to pull out data
-
-# Convert to df
-anoph_raster_df <- as.MAPraster(anoph_raster) %>% 
-  unclass %>% 
-  as.data.frame() 
+# Get data. The malariaAtlas Explorer endpoint these chunks were written against has been
+# retired (geoserver returns HTTP 404) and getRaster() no longer takes `dataset_id`, so both
+# the shapefile and the ALC raster now come from the caches in _setup.R.
+malaysia_shp <- pk_malaysia_shp()
+anoph_raster_df <- pk_anoph_raster_df()   # cached ALC layer (x, y, z)
 
 malaysia_shp_df <- as.MAPshp(malaysia_shp) %>% 
   unclass %>% 
@@ -712,9 +705,10 @@ plot_1 <- ggplot() +
   scale_y_continuous(limits = c(-4.5, 7)) +
   geom_raster(data = anoph_raster_df, mapping = aes(x = x, y = y, fill = z)) +
   geom_sf(data = st_as_sf(polygon_data), col = "red", fill = "transparent") +
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous(name = "ALC layer") +
   ylab("Latitude") +
   xlab("Longitude") +
+  theme_pk_map() +
   theme(legend.position = "none")
 
 plot_2 <- ggplot() +
@@ -723,10 +717,10 @@ plot_2 <- ggplot() +
   geom_sf(data = st_as_sf(polygon_data), col = "red", fill = "transparent") +
   scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
   scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous(name = "ALC layer") +
   ylab("Latitude") +
   xlab("Longitude") +
-  labs(fill = "ALC Layer")
+  theme_pk_map()
 
 plot_raster <- grid.arrange(plot_1, plot_2, ncol = 2)
 save_fig(plot_raster, "ALC_raster", width = 10, height = 6)
@@ -752,10 +746,10 @@ plot_1 <- ggplot() +
   geom_sf(data = st_as_sf(polygon_data_landscape), col = "red", mapping = aes(fill = Percentage_TC)) +
   scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
   scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
-  theme_dark() +
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous() +
   ylab("Latitude") +
-  xlab("Longitude") 
+  xlab("Longitude") +
+  theme_pk_map() 
 
 # P:A ratio
 landscape_sample_data_analysis <- landscape_sample_data %>% 
@@ -774,10 +768,10 @@ plot_2 <- ggplot() +
   geom_sf(data = st_as_sf(polygon_data_landscape), col = "red", mapping = aes(fill = PA_ratio_TC)) +
   scale_x_continuous(limits = c(116, 117.5), breaks = c(116.5, 117)) +
   scale_y_continuous(limits = c(5.5, 7.5), breaks = c(6, 7)) +
-  theme_dark() +
-  scale_fill_viridis_c() +
+  scale_fill_pk_continuous() +
   ylab("Latitude") +
-  xlab("Longitude") 
+  xlab("Longitude") +
+  theme_pk_map() 
 
 plot_raster <- grid.arrange(plot_1, plot_2, ncol = 2)
 save_fig(plot_raster, "TC_raster", width = 10, height = 6)
