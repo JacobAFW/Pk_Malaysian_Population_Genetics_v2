@@ -152,3 +152,12 @@ data/processed/*
 # Internal project-management notes (not for public repo)
 DECISIONS.md
 STATUS.md
+
+# === Internal workflow / process docs (autonomy runs, missions, handoffs) ===
+AUTONOMY_PROTOCOL.md
+MISSION.md
+ZOOMAL-Flow_deployment_handoff.md
+env/MISSION_introgression.md
+env/MISSION_template.md
+docs/introgression_rewrite_brief.md
+runs/

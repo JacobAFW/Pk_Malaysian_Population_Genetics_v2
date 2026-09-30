@@ -59,4 +59,4 @@ those to your own input locations when running from a fresh clone.
 
 ## License
 
-<add a license before publishing — e.g. MIT for code>
+Released under the MIT License — see [`LICENSE`](LICENSE).
