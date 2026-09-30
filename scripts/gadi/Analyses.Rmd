@@ -13,7 +13,7 @@ MOI: https://bahlolab.github.io/moimix/vignettes/introduction.html#estimating-mo
 module load bcftools/1.12
 module load java/jdk-8.40 
 module load R/4.3.1 
-export R_LIBS=/home/588/jw1542/.local/lib/R_4.3:$R_LIBS
+export R_LIBS=$HOME/.local/lib/R_4.3:$R_LIBS
 export PATH=$PATH:/g/data/pq84/bin/plink2/
 source /g/data/pq84/python-3.9.2/bin/activate
 export PATH=$PATH:/g/data/pq84/bin/hmmIBD/  

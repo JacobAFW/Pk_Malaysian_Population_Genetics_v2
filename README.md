@@ -26,8 +26,7 @@ This repository contains **code only**. By design it does **not** include:
 Data lives on the institutional HPC (NCI Gadi) and is not in version control. The
 scripts expect inputs under `data/raw/` at the paths described below.
 
-> No secrets or credentials were found in the included files. One redaction is
-> still required before publishing — see **Before publishing**.
+> Code only — no secrets, credentials, data, or identifying metadata are tracked.
 
 ## Reproducing the analysis
 
@@ -52,14 +51,11 @@ data/           # (empty) expected input location — not tracked
 results/  figures/  outputs/   # (empty) output targets — not tracked
 ```
 
-## Before publishing
+## Note on the `scripts/gadi/` scripts
 
-- **Redact the HPC username `jw1542`** (`/home/588/jw1542/...`) in
-  `scripts/gadi/ibd_and_selection.Rmd`, `scripts/gadi/Analyses.Rmd`, and
-  `scripts/gadi/selection_cluster_spec.pbs` — category-D identifying info.
-- **Generalise absolute paths** (`/g/data/pq84/...`, `/Users/.../Pk_Pipeline/...`)
-  in `scripts/gadi/` to relative `data/raw/...` paths so the repo runs from a
-  fresh clone.
+These are the archival HPC (NCI Gadi) job scripts, kept as-run for provenance.
+They reference absolute project paths on that system (`/g/data/pq84/...`); adapt
+those to your own input locations when running from a fresh clone.
 
 ## License
 

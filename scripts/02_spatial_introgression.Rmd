@@ -128,10 +128,10 @@ district_level_vector_data_summary <- district_level_vector_data %>%
   group_by(District) %>% 
   summarise(mean = mean(z), median = median(z), min = min(z), max = max(z)) 
 
-#write_tsv(district_level_vector_data_summary, "/Users/jacobwestaway/Desktop/Menzies/Knowlesi/Pipeline/Pk_Pipeline/data/MSC/district_level_vector_data.tsv")
+#write_tsv(district_level_vector_data_summary, "data/MSC/district_level_vector_data.tsv")
 district_level_vector_data %>% 
   dplyr::select(x, y)  
-  #write_csv("/Users/jacobwestaway/Desktop/Menzies/Knowlesi/Pipeline/Pk_Pipeline/data/MSC/district_level_vector_data_coords.csv")
+  #write_csv("data/MSC/district_level_vector_data_coords.csv")
 ```
 
 
