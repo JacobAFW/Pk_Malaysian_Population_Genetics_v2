@@ -161,3 +161,5 @@ env/MISSION_introgression.md
 env/MISSION_template.md
 docs/introgression_rewrite_brief.md
 runs/
+.claude/settings.local.json
+runs/*/.scratch/
